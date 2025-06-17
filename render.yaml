@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: round-taible-backend
+    env: python
+    region: frankfurt  # Cambia se preferisci altra regione
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn main:app --host 0.0.0.0 --port $PORT"
+    
+    # Environment Variables
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"
+      - key: OPENROUTER_BASE_URL
+        value: "https://openrouter.ai/api/v1"
+      - key: OPENROUTER_TIMEOUT
+        value: "60"
+      
+    # Secrets (da configurare manualmente su Render dashboard)
+    # - OPENROUTER_API_KEY (Secret)
+    
+    # Auto-deploy settings
+    autoDeploy: true
+    
+    # Health check
+    healthCheckPath: "/models"
