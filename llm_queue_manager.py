@@ -6,7 +6,7 @@ from typing import Dict, List, Optional, Callable
 import logging
 from enum import Enum
 import time
-import httpx
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -148,50 +148,20 @@ class LLMQueueManager:
                     response_time = (datetime.now() - start_time).total_seconds()
                     
                     # Invia risposta via WebSocket
-                    # Salva il messaggio nel database tramite API frontend
                     message_data = {
                         'modelId': request.model_id,
                         'content': response['content'],
                         'timestamp': datetime.now().isoformat(),
-                        'type': 'ai'
+                        'type': 'ai',
+                        'id': f"msg_{int(time.time() * 1000)}",
+                        'turnNumber': request.message_count + 1
                     }
                     
-                    try:
-                        async with httpx.AsyncClient() as client:
-                            api_response = await client.post(
-                                f"http://localhost:3000/api/debates/{request.debate_id}/messages",
-                                json=message_data,
-                                timeout=10.0
-                            )
-                            
-                            if api_response.status_code == 200:
-                                saved_message = api_response.json()
-                                logger.info(f"Messaggio salvato nel database: {saved_message.get('id', 'unknown')}")
-                                
-                                # Invia il messaggio completo con turnNumber via WebSocket
-                                await self._send_response_to_debate(request.debate_id, {
-                                    'type': 'new_message',
-                                    'data': saved_message
-                                })
-                            else:
-                                logger.error(f"Errore salvando messaggio nel database: {api_response.status_code}")
-                                raise Exception(f"Database save failed: {api_response.status_code}")
-                                
-                    except Exception as db_error:
-                        logger.error(f"Errore chiamata API database: {db_error}")
-                        # Fallback: invia via WebSocket senza salvare nel DB
-                        await self._send_response_to_debate(request.debate_id, {
-                            'type': 'new_message',
-                            'data': {
-                                'id': request_id,
-                                'ai': request.model_id,
-                                'content': response['content'],
-                                'timestamp': datetime.now().isoformat(),
-                                'turnNumber': 0,  # Sarà corretto dal frontend
-                                'votes': {'up': 0, 'down': 0},
-                                'type': 'ai'
-                            }
-                        })
+                    # Invia il messaggio via WebSocket
+                    await self._send_response_to_debate(request.debate_id, {
+                        'type': 'new_message',
+                        'data': message_data
+                    })
                     
                     # Callback se presente
                     if request.callback:

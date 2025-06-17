@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-import httpx
+import requests
 import configparser
 import asyncio
 import json
@@ -63,7 +63,7 @@ for model_name in config.options('models'):
 
 # Simple data structures instead of Pydantic models for Render compatibility
 
-async def call_openrouter(model: str, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
+def call_openrouter(model: str, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
     """Make API call to OpenRouter"""
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -78,24 +78,25 @@ async def call_openrouter(model: str, messages: List[Dict[str, str]], **kwargs) 
         **kwargs
     }
     
-    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-        try:
-            response = await client.post(
-                f"{OPENROUTER_BASE_URL}/chat/completions",
-                headers=headers,
-                json=payload
-            )
-            response.raise_for_status()
-            return response.json()
-        except httpx.HTTPError as e:
-            logger.error(f"OpenRouter API error: {str(e)}")
+    try:
+        response = requests.post(
+            f"{OPENROUTER_BASE_URL}/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException as e:
+        logger.error(f"OpenRouter API error: {str(e)}")
+        if hasattr(response, 'status_code'):
             logger.error(f"Response status: {response.status_code}")
             logger.error(f"Response text: {response.text}")
-            logger.error(f"Request payload: {json.dumps(payload, indent=2)}")
-            raise HTTPException(status_code=500, detail=f"OpenRouter API error: {str(e)}")
-        except Exception as e:
-            logger.error(f"Unexpected error: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+        logger.error(f"Request payload: {json.dumps(payload, indent=2)}")
+        raise HTTPException(status_code=500, detail=f"OpenRouter API error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 @app.get("/")
 async def root():
@@ -106,21 +107,22 @@ async def health_check():
     return {"status": "healthy", "models": list(MODELS.keys())}
 
 @app.post("/chat/completions")
-async def chat_completions(request: ChatRequest):
+async def chat_completions(request: dict):
     """Main chat endpoint that interfaces with OpenRouter"""
-    if request.model not in MODELS:
-        raise HTTPException(status_code=400, detail=f"Model {request.model} not supported")
+    model = request.get("model")
+    if not model or model not in MODELS:
+        raise HTTPException(status_code=400, detail=f"Model {model} not supported")
     
-    openrouter_model = MODELS[request.model]
-    messages = [{"role": msg.role, "content": msg.content} for msg in request.messages]
+    openrouter_model = MODELS[model]
+    messages = request.get("messages", [])
     
     try:
-        response = await call_openrouter(
+        response = call_openrouter(
             model=openrouter_model,
             messages=messages,
-            max_tokens=request.max_tokens,
-            temperature=request.temperature,
-            stream=request.stream
+            max_tokens=request.get("max_tokens", 1000),
+            temperature=request.get("temperature", 0.7),
+            stream=request.get("stream", False)
         )
         return response
     except Exception as e:
