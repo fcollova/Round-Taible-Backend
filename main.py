@@ -18,7 +18,19 @@ logger = logging.getLogger(__name__)
 
 # Load configuration
 config = configparser.ConfigParser()
-config.read('config.conf')
+config_paths = ['config.conf', './config.conf', '../config.conf', '/opt/render/project/src/config.conf']
+config_loaded = False
+for path in config_paths:
+    try:
+        if config.read(path):
+            config_loaded = True
+            logger.info(f"Config loaded from: {path}")
+            break
+    except Exception as e:
+        logger.debug(f"Failed to read config from {path}: {e}")
+
+if not config_loaded:
+    logger.warning("No config file found, using environment variables only")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -56,10 +68,31 @@ OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY') or config.get('openrouter',
 OPENROUTER_BASE_URL = os.getenv('OPENROUTER_BASE_URL') or config.get('openrouter', 'base_url', fallback='https://openrouter.ai/api/v1')
 TIMEOUT = int(os.getenv('OPENROUTER_TIMEOUT', '60')) or int(config.get('openrouter', 'timeout', fallback='60'))
 
-# Model mappings - load all models from config
+# Model mappings - load all models from config or use defaults
 MODELS = {}
-for model_name in config.options('models'):
-    MODELS[model_name] = config.get('models', model_name)
+try:
+    if config.has_section('models'):
+        for model_name in config.options('models'):
+            MODELS[model_name] = config.get('models', model_name)
+        logger.info(f"Loaded {len(MODELS)} models from config")
+    else:
+        logger.warning("No models section in config, using default models")
+        raise configparser.NoSectionError('models')
+except (configparser.NoSectionError, AttributeError):
+    # Fallback to default models if config is missing or incomplete
+    MODELS = {
+        'gpt4': 'openai/gpt-4',
+        'claude': 'anthropic/claude-3-5-sonnet-20241022', 
+        'gemini': 'google/gemini-2.5-flash-preview-05-20',
+        'llama': 'meta-llama/llama-3.3-70b-instruct',
+        'mistral': 'mistralai/devstral-small:free',
+        'zephyr': 'deepseek/deepseek-r1-0528-qwen3-8b:free',
+        'openchat': 'sarvamai/sarvam-m:free',
+        'vicuna': 'google/gemma-3n-e4b-it:free',
+        'alpaca': 'meta-llama/llama-3.2-3b-instruct:free',
+        'wizard': 'nousresearch/deephermes-3-mistral-24b-preview:free'
+    }
+    logger.info(f"Using default models: {list(MODELS.keys())}")
 
 # Simple data structures instead of Pydantic models for Render compatibility
 
@@ -354,9 +387,12 @@ async def set_message_priority(request: Dict[str, Any]):
 if __name__ == "__main__":
     import uvicorn
     
-    host = config.get('server', 'host')
-    port = int(config.get('server', 'port'))
-    debug = config.getboolean('server', 'debug')
+    # Use environment variables with config fallback
+    host = os.getenv('HOST') or config.get('server', 'host', fallback='0.0.0.0')
+    port = int(os.getenv('PORT', '8000')) or int(config.get('server', 'port', fallback='8000'))
+    debug = os.getenv('DEBUG', 'false').lower() == 'true' or config.getboolean('server', 'debug', fallback=False)
+    
+    logger.info(f"Starting server on {host}:{port}, debug={debug}")
     
     if debug:
         uvicorn.run("main:app", host=host, port=port, reload=True)
