@@ -1,6 +1,5 @@
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from contextlib import asynccontextmanager
 import httpx
 import configparser
@@ -62,22 +61,7 @@ MODELS = {}
 for model_name in config.options('models'):
     MODELS[model_name] = config.get('models', model_name)
 
-class ChatMessage(BaseModel):
-    role: str
-    content: str
-
-class ChatRequest(BaseModel):
-    model: str
-    messages: List[ChatMessage]
-    max_tokens: Optional[int] = 1000
-    temperature: Optional[float] = 0.7
-    stream: Optional[bool] = False
-
-class ChatResponse(BaseModel):
-    id: str
-    model: str
-    choices: List[Dict[str, Any]]
-    usage: Dict[str, int]
+# Simple data structures instead of Pydantic models for Render compatibility
 
 async def call_openrouter(model: str, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
     """Make API call to OpenRouter"""
