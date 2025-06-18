@@ -7,8 +7,9 @@ import logging
 from enum import Enum
 import time
 import requests
+from logging_config import get_context_logger, performance_metrics
 
-logger = logging.getLogger(__name__)
+logger = get_context_logger(__name__)
 
 class MessagePriority(Enum):
     LOW = 1
@@ -69,6 +70,11 @@ class LLMQueueManager:
     async def start(self, num_workers: int = 2):
         """Avvia i worker per processare le code"""
         self.running = True
+        
+        logger.info("Starting LLM Queue Manager", 
+                   worker_count=num_workers,
+                   max_concurrent=self.semaphore._value)
+        
         for i in range(num_workers):
             worker = asyncio.create_task(self._worker(f"worker-{i}"))
             self.workers.append(worker)
@@ -77,26 +83,59 @@ class LLMQueueManager:
         cleanup_worker = asyncio.create_task(self._cleanup_expired_requests())
         self.workers.append(cleanup_worker)
         
-        logger.info(f"LLM Queue Manager avviato con {num_workers} workers")
+        logger.info("LLM Queue Manager started successfully", 
+                   total_workers=len(self.workers),
+                   active_workers=num_workers,
+                   cleanup_worker=True)
     
     async def stop(self):
         """Ferma tutti i workers"""
+        logger.info("Stopping LLM Queue Manager", 
+                   active_workers=len(self.workers),
+                   pending_requests=len(self.active_requests))
+        
         self.running = False
+        cancelled_count = 0
+        
         for worker in self.workers:
             worker.cancel()
+            cancelled_count += 1
+        
         await asyncio.gather(*self.workers, return_exceptions=True)
-        logger.info("LLM Queue Manager fermato")
+        
+        logger.info("LLM Queue Manager stopped", 
+                   cancelled_workers=cancelled_count,
+                   final_stats=self.stats)
     
     async def enqueue_message(self, request: MessageRequest) -> str:
         """Aggiungi richiesta alla coda appropriata"""
-        request_id = f"{request.debate_id}_{request.model_id}_{time.time()}"
+        request_id = f"{request.debate_id}_{request.model_id}_{int(time.time() * 1000)}"
+        
+        logger.info("Enqueuing LLM message request",
+                   request_id=request_id,
+                   debate_id=request.debate_id,
+                   model_id=request.model_id,
+                   priority=request.priority.name,
+                   message_count=request.message_count)
         
         async with self.request_lock:
             self.active_requests[request_id] = request
         
         await self.priority_queues[request.priority].put((request_id, request))
         
-        logger.info(f"Richiesta {request_id} aggiunta alla coda {request.priority.name}")
+        # Log stato delle code
+        queue_stats = self.get_queue_stats()
+        performance_metrics.log_queue_metrics(
+            queue_sizes=queue_stats['queue_sizes'],
+            active_requests=queue_stats['active_requests'],
+            avg_wait_time=queue_stats['stats']['average_queue_wait_time']
+        )
+        
+        logger.debug("Request successfully enqueued",
+                    request_id=request_id,
+                    queue_size=queue_stats['queue_sizes'][request.priority.name],
+                    total_active=queue_stats['active_requests'])
+        
         return request_id
     
     async def _worker(self, worker_name: str):
@@ -114,6 +153,12 @@ class LLMQueueManager:
                                 queue.get(), timeout=0.1
                             )
                             
+                            logger.debug("Worker picked up request",
+                                       worker_name=worker_name,
+                                       request_id=request_id,
+                                       priority=priority.name,
+                                       debate_id=request.debate_id)
+                            
                             # Processa la richiesta
                             await self._process_request(worker_name, request_id, request)
                             break
@@ -125,7 +170,10 @@ class LLMQueueManager:
                 await asyncio.sleep(0.1)
                 
             except Exception as e:
-                logger.error(f"Errore nel worker {worker_name}: {e}")
+                logger.error("Critical error in worker",
+                           worker_name=worker_name,
+                           error=str(e),
+                           error_type=type(e).__name__)
                 await asyncio.sleep(1)
     
     async def _process_request(self, worker_name: str, request_id: str, request: MessageRequest):
@@ -138,7 +186,13 @@ class LLMQueueManager:
                 # Rate limiting per modello
                 await self._apply_rate_limit(request.model_id)
                 
-                logger.info(f"{worker_name} processando {request_id} (attesa: {queue_wait_time:.2f}s)")
+                logger.info("Worker processing LLM request",
+                           worker_name=worker_name,
+                           request_id=request_id,
+                           debate_id=request.debate_id,
+                           model_id=request.model_id,
+                           queue_wait_time=queue_wait_time,
+                           retry_count=request.retry_count)
                 
                 # Genera risposta LLM
                 response = await self._generate_llm_response(request)
@@ -176,7 +230,14 @@ class LLMQueueManager:
                     if len(self.stats['queue_wait_times']) > 100:
                         self.stats['queue_wait_times'] = self.stats['queue_wait_times'][-100:]
                     
-                    logger.info(f"{worker_name} completato {request_id} in {response_time:.2f}s")
+                    logger.info("Worker completed LLM request successfully",
+                               worker_name=worker_name,
+                               request_id=request_id,
+                               debate_id=request.debate_id,
+                               model_id=request.model_id,
+                               response_time=response_time,
+                               content_length=len(response.get('content', '')),
+                               queue_wait_time=queue_wait_time)
                 
             except Exception as e:
                 await self._handle_request_error(request_id, request, e)
@@ -227,14 +288,28 @@ class LLMQueueManager:
                 await asyncio.sleep(2 ** request.retry_count)  # Exponential backoff
                 await self.enqueue_message(request)
                 
-                logger.warning(f"Retry {request.retry_count}/{request.max_retries} per richiesta {request.debate_id}")
+                logger.warning("Retrying LLM request",
+                              request_id=request_id,
+                              debate_id=request.debate_id,
+                              model_id=request.model_id,
+                              retry_count=request.retry_count,
+                              max_retries=request.max_retries,
+                              new_priority=new_priority.name,
+                              backoff_delay=2 ** request.retry_count)
                 return None
             else:
                 raise e
     
     async def _handle_request_error(self, request_id: str, request: MessageRequest, error: Exception):
         """Gestisce errori nelle richieste"""
-        logger.error(f"Errore processando {request_id}: {error}")
+        logger.error("Error processing LLM request",
+                    request_id=request_id,
+                    debate_id=request.debate_id,
+                    model_id=request.model_id,
+                    error=str(error),
+                    error_type=type(error).__name__,
+                    retry_count=request.retry_count,
+                    max_retries=request.max_retries)
         
         # Invia messaggio di fallback via WebSocket
         fallback_messages = [
@@ -270,7 +345,10 @@ class LLMQueueManager:
             from websocket_manager import debate_manager
             await debate_manager.broadcast_to_debate(debate_id, message)
         except Exception as e:
-            logger.error(f"Errore invio WebSocket per dibattito {debate_id}: {e}")
+            logger.error("Failed to send WebSocket response",
+                    debate_id=debate_id,
+                    error=str(e),
+                    error_type=type(e).__name__)
     
     async def _cleanup_expired_requests(self):
         """Rimuove richieste scadute"""
@@ -286,13 +364,20 @@ class LLMQueueManager:
                     ]
                     
                     for req_id in expired_requests:
+                        expired_req = self.active_requests[req_id]
                         del self.active_requests[req_id]
-                        logger.warning(f"Richiesta scaduta rimossa: {req_id}")
+                        logger.warning("Expired request removed",
+                                     request_id=req_id,
+                                     debate_id=expired_req.debate_id,
+                                     model_id=expired_req.model_id,
+                                     age_minutes=(current_time - expired_req.created_at).total_seconds() / 60)
                 
                 await asyncio.sleep(60)  # Cleanup ogni minuto
                 
             except Exception as e:
-                logger.error(f"Errore nel cleanup: {e}")
+                logger.error("Error in cleanup worker",
+                           error=str(e),
+                           error_type=type(e).__name__)
                 await asyncio.sleep(60)
     
     def _update_average_response_time(self, response_time: float):

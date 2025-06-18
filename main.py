@@ -1,5 +1,6 @@
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from contextlib import asynccontextmanager
 import requests
 import configparser
@@ -9,12 +10,14 @@ from typing import List, Dict, Any, Optional
 import os
 import logging
 from datetime import datetime
+import time
 from websocket_manager import debate_manager
 from llm_queue_manager import llm_queue, MessageRequest, MessagePriority
+from logging_config import setup_logging, get_context_logger, performance_metrics
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Setup structured logging
+setup_logging(debug=True, log_file='./logs/backend.log')
+logger = get_context_logger(__name__)
 
 # Load configuration
 config = configparser.ConfigParser()
@@ -24,13 +27,13 @@ for path in config_paths:
     try:
         if config.read(path):
             config_loaded = True
-            logger.info(f"Config loaded from: {path}")
+            logger.info("Configuration loaded successfully", config_path=path)
             break
     except Exception as e:
-        logger.debug(f"Failed to read config from {path}: {e}")
+        logger.debug("Failed to read config file", config_path=path, error=str(e))
 
 if not config_loaded:
-    logger.warning("No config file found, using environment variables only")
+    logger.warning("No config file found, using environment variables and defaults")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -41,6 +44,45 @@ async def lifespan(app: FastAPI):
     await llm_queue.stop()
 
 app = FastAPI(title="Round TAIble Backend", version="1.0.0", lifespan=lifespan)
+
+# Logging middleware per tutte le richieste HTTP
+class LoggingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        start_time = time.time()
+        
+        # Log richiesta in entrata
+        logger.info("HTTP request started",
+                   method=request.method,
+                   url=str(request.url),
+                   client_ip=request.client.host if request.client else "unknown",
+                   user_agent=request.headers.get("user-agent", "unknown"))
+        
+        # Processa richiesta
+        try:
+            response = await call_next(request)
+            response_time = time.time() - start_time
+            
+            # Log risposta
+            performance_metrics.log_api_call(
+                endpoint=str(request.url.path),
+                method=request.method,
+                response_time=response_time,
+                status_code=response.status_code
+            )
+            
+            return response
+            
+        except Exception as e:
+            response_time = time.time() - start_time
+            logger.error("HTTP request failed",
+                        method=request.method,
+                        url=str(request.url),
+                        response_time=response_time,
+                        error=str(e),
+                        error_type=type(e).__name__)
+            raise
+
+app.add_middleware(LoggingMiddleware)
 
 # CORS middleware
 allowed_origins = []
@@ -74,9 +116,9 @@ try:
     if config.has_section('models'):
         for model_name in config.options('models'):
             MODELS[model_name] = config.get('models', model_name)
-        logger.info(f"Loaded {len(MODELS)} models from config")
+        logger.info("Models loaded from configuration", model_count=len(MODELS), models=list(MODELS.keys()))
     else:
-        logger.warning("No models section in config, using default models")
+        logger.warning("No models section in config, falling back to defaults")
         raise configparser.NoSectionError('models')
 except (configparser.NoSectionError, AttributeError):
     # Fallback to default models if config is missing or incomplete
@@ -92,14 +134,22 @@ except (configparser.NoSectionError, AttributeError):
         'alpaca': 'meta-llama/llama-3.2-3b-instruct:free',
         'wizard': 'nousresearch/deephermes-3-mistral-24b-preview:free'
     }
-    logger.info(f"Using default models: {list(MODELS.keys())}")
+    logger.info("Using default model configuration", model_count=len(MODELS), models=list(MODELS.keys()))
 
 # Simple data structures instead of Pydantic models for Render compatibility
 
 def call_openrouter(model: str, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
-    """Make API call to OpenRouter"""
+    """Make API call to OpenRouter with comprehensive logging"""
+    start_time = time.time()
+    request_id = f"req_{int(start_time * 1000)}"
+    
+    logger.info("Starting OpenRouter API call", 
+               model_id=model, 
+               request_id=request_id,
+               message_count=len(messages))
+    
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {OPENROUTER_API_KEY[:8]}***",  # Mask API key in logs
         "Content-Type": "application/json",
         "HTTP-Referer": "http://localhost:3000",
         "X-Title": "Round TAIble"
@@ -118,32 +168,89 @@ def call_openrouter(model: str, messages: List[Dict[str, str]], **kwargs) -> Dic
             json=payload,
             timeout=30
         )
+        response_time = time.time() - start_time
+        
         response.raise_for_status()
-        return response.json()
+        result = response.json()
+        
+        # Log successful request
+        tokens_used = result.get('usage', {}).get('total_tokens', 0)
+        performance_metrics.log_llm_request(
+            model=model,
+            response_time=response_time,
+            tokens_used=tokens_used,
+            request_id=request_id
+        )
+        
+        logger.info("OpenRouter API call successful",
+                   model_id=model,
+                   request_id=request_id,
+                   response_time=response_time,
+                   tokens_used=tokens_used,
+                   status_code=response.status_code)
+        
+        return result
+        
     except requests.RequestException as e:
-        logger.error(f"OpenRouter API error: {str(e)}")
-        if hasattr(response, 'status_code'):
-            logger.error(f"Response status: {response.status_code}")
-            logger.error(f"Response text: {response.text}")
-        logger.error(f"Request payload: {json.dumps(payload, indent=2)}")
+        response_time = time.time() - start_time
+        status_code = getattr(response, 'status_code', None) if 'response' in locals() else None
+        
+        logger.error("OpenRouter API request failed",
+                    model_id=model,
+                    request_id=request_id,
+                    response_time=response_time,
+                    status_code=status_code,
+                    error=str(e))
+        
+        if status_code:
+            logger.debug("API error response details",
+                        request_id=request_id,
+                        response_text=getattr(response, 'text', 'N/A')[:500])
+        
         raise HTTPException(status_code=500, detail=f"OpenRouter API error: {str(e)}")
+        
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
+        response_time = time.time() - start_time
+        logger.error("Unexpected error in OpenRouter call",
+                    model_id=model,
+                    request_id=request_id,
+                    response_time=response_time,
+                    error=str(e),
+                    error_type=type(e).__name__)
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 @app.get("/")
 async def root():
+    logger.info("Root endpoint accessed")
     return {"message": "Round TAIble Backend API", "status": "running"}
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "models": list(MODELS.keys())}
+    logger.debug("Health check requested")
+    queue_stats = llm_queue.get_queue_stats()
+    ws_stats = debate_manager.get_connection_stats()
+    
+    health_data = {
+        "status": "healthy", 
+        "models": list(MODELS.keys()),
+        "active_debates": ws_stats['active_debates'],
+        "queue_active": queue_stats['active_requests'],
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    logger.info("Health check completed", **health_data)
+    return health_data
 
 @app.post("/chat/completions")
 async def chat_completions(request: dict):
     """Main chat endpoint that interfaces with OpenRouter"""
+    start_time = time.time()
     model = request.get("model")
+    
+    logger.info("Chat completion request started", model_id=model)
+    
     if not model or model not in MODELS:
+        logger.warning("Invalid model requested", model_id=model, available_models=list(MODELS.keys()))
         raise HTTPException(status_code=400, detail=f"Model {model} not supported")
     
     openrouter_model = MODELS[model]
@@ -157,8 +264,24 @@ async def chat_completions(request: dict):
             temperature=request.get("temperature", 0.7),
             stream=request.get("stream", False)
         )
+        
+        response_time = time.time() - start_time
+        performance_metrics.log_api_call(
+            endpoint="/chat/completions",
+            method="POST",
+            response_time=response_time,
+            status_code=200,
+            model_id=model
+        )
+        
         return response
+        
     except Exception as e:
+        response_time = time.time() - start_time
+        logger.error("Chat completion failed",
+                    model_id=model,
+                    response_time=response_time,
+                    error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/debate/generate")
@@ -252,7 +375,12 @@ async def continue_debate(request: Dict[str, Any]):
     if not debate_id or not models or not topic:
         raise HTTPException(status_code=400, detail="Missing required fields")
     
-    logger.info(f"Debate {debate_id}: Continue with {len(models)} participants on topic: '{topic}'")
+    logger.info("Continuing debate with participants", 
+               debate_id=debate_id,
+               participant_count=len(models),
+               participants=models,
+               topic=topic,
+               message_count=len(recent_messages))
     
     # Fetch model information from the database
     model_info = {}
@@ -282,10 +410,17 @@ async def continue_debate(request: Dict[str, Any]):
     
     # Map model ID to internal model name - use the ID directly since it matches MODELS keys
     model_name = next_model
-    logger.info(f"Debate {debate_id}: Next speaker is {next_model}, mapped to {model_name}")
+    logger.info("Next debate speaker determined",
+               debate_id=debate_id,
+               next_speaker=next_model,
+               mapped_model=model_name,
+               last_speaker=last_speaker)
     
     if model_name not in MODELS:
-        logger.error(f"Model {model_name} not found in MODELS: {list(MODELS.keys())}")
+        logger.error("Model not found in available models",
+                    model_id=model_name,
+                    available_models=list(MODELS.keys()),
+                    debate_id=debate_id)
         raise HTTPException(status_code=400, detail=f"Model {model_name} not supported")
     
     # Create enhanced context from recent messages with model names and moderator interventions
@@ -377,12 +512,107 @@ async def set_message_priority(request: Dict[str, Any]):
     request_id = request.get('request_id')
     priority = request.get('priority', 'NORMAL')
     
+    logger.info("Priority change requested",
+               request_id=request_id,
+               new_priority=priority)
+    
     try:
         priority_enum = MessagePriority[priority.upper()]
         # Logica per aggiornare priorità se implementata
         return {"status": "updated", "request_id": request_id, "priority": priority}
     except KeyError:
+        logger.warning("Invalid priority level requested",
+                      request_id=request_id,
+                      invalid_priority=priority,
+                      valid_priorities=list(MessagePriority.__members__.keys()))
         raise HTTPException(status_code=400, detail="Invalid priority level")
+
+@app.get("/logs/recent")
+async def get_recent_logs(lines: int = 100):
+    """Endpoint per ottenere log recenti"""
+    import os
+    
+    log_file = "./logs/backend.log"
+    
+    if not os.path.exists(log_file):
+        logger.warning("Log file not found", log_file=log_file)
+        return {"logs": [], "message": "No log file found"}
+    
+    try:
+        with open(log_file, 'r', encoding='utf-8') as f:
+            all_lines = f.readlines()
+            recent_lines = all_lines[-lines:] if len(all_lines) > lines else all_lines
+            
+        logger.debug("Recent logs requested",
+                    requested_lines=lines,
+                    returned_lines=len(recent_lines),
+                    total_lines=len(all_lines))
+        
+        return {
+            "logs": [line.strip() for line in recent_lines],
+            "total_lines": len(all_lines),
+            "returned_lines": len(recent_lines)
+        }
+        
+    except Exception as e:
+        logger.error("Failed to read log file",
+                    log_file=log_file,
+                    error=str(e))
+        raise HTTPException(status_code=500, detail="Failed to read logs")
+
+@app.get("/system/metrics")
+async def get_system_metrics():
+    """Endpoint per metriche di sistema complete"""
+    import psutil
+    import os
+    
+    try:
+        # Metriche sistema
+        cpu_percent = psutil.cpu_percent(interval=1)
+        memory = psutil.virtual_memory()
+        disk = psutil.disk_usage('/')
+        
+        # Metriche applicazione
+        queue_stats = llm_queue.get_queue_stats()
+        ws_stats = debate_manager.get_connection_stats()
+        
+        # Info processo
+        process = psutil.Process(os.getpid())
+        process_memory = process.memory_info()
+        
+        metrics = {
+            "system": {
+                "cpu_percent": cpu_percent,
+                "memory_total_mb": memory.total // (1024*1024),
+                "memory_used_mb": memory.used // (1024*1024),
+                "memory_percent": memory.percent,
+                "disk_total_gb": disk.total // (1024*1024*1024),
+                "disk_used_gb": disk.used // (1024*1024*1024),
+                "disk_percent": (disk.used / disk.total) * 100
+            },
+            "process": {
+                "memory_rss_mb": process_memory.rss // (1024*1024),
+                "memory_vms_mb": process_memory.vms // (1024*1024),
+                "cpu_percent": process.cpu_percent(),
+                "num_threads": process.num_threads()
+            },
+            "application": {
+                "queue_stats": queue_stats,
+                "websocket_stats": ws_stats,
+                "models_available": len(MODELS)
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        logger.debug("System metrics requested", **metrics["system"])
+        
+        return metrics
+        
+    except Exception as e:
+        logger.error("Failed to get system metrics",
+                    error=str(e),
+                    error_type=type(e).__name__)
+        raise HTTPException(status_code=500, detail="Failed to get system metrics")
 
 if __name__ == "__main__":
     import uvicorn
@@ -392,7 +622,11 @@ if __name__ == "__main__":
     port = int(os.getenv('PORT', '8000')) or int(config.get('server', 'port', fallback='8000'))
     debug = os.getenv('DEBUG', 'false').lower() == 'true' or config.getboolean('server', 'debug', fallback=False)
     
-    logger.info(f"Starting server on {host}:{port}, debug={debug}")
+    logger.info("Starting FastAPI server", 
+               host=host, 
+               port=port, 
+               debug=debug,
+               models_available=len(MODELS))
     
     if debug:
         uvicorn.run("main:app", host=host, port=port, reload=True)
