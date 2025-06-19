@@ -22,11 +22,11 @@ wheels/
 MANIFEST
 
 # Environment variables
-.env
-.env.local
-.env.production
-.env.staging
-config.conf
+#.env
+#.env.local
+#.env.production
+#.env.staging
+#config.conf
 
 # Logs
 *.log
