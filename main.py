@@ -150,7 +150,7 @@ def call_openrouter(model: str, messages: List[Dict[str, str]], **kwargs) -> Dic
                message_count=len(messages))
     
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY[:8]}***",  # Mask API key in logs
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",  # Use full API key for request
         "Content-Type": "application/json",
         "HTTP-Referer": "http://localhost:3000",
         "X-Title": "Round TAIble"
@@ -204,9 +204,11 @@ def call_openrouter(model: str, messages: List[Dict[str, str]], **kwargs) -> Dic
                     error=str(e))
         
         if status_code:
-            logger.debug("API error response details",
+            logger.error("API error response details",
                         request_id=request_id,
-                        response_text=getattr(response, 'text', 'N/A')[:500])
+                        status_code=status_code,
+                        response_text=getattr(response, 'text', 'N/A')[:1000],
+                        response_headers=dict(getattr(response, 'headers', {})))
         
         raise HTTPException(status_code=500, detail=f"OpenRouter API error: {str(e)}")
         
@@ -393,9 +395,21 @@ async def continue_debate(request: Dict[str, Any]):
     except Exception as e:
         print(f"Warning: Could not fetch model info from database: {e}")
     
+    # Debug: Log dei recent_messages per verificare il formato
+    logger.info("Analyzing recent messages for turn determination",
+               debate_id=debate_id,
+               total_recent_messages=len(recent_messages),
+               recent_messages_sample=recent_messages[-2:] if len(recent_messages) > 1 else recent_messages)
+    
     # Determine next model to speak (strict round-robin alternation)
     last_speaker = recent_messages[-1].get('model') if recent_messages else None
     next_model = None
+    
+    logger.info("Turn analysis",
+               debate_id=debate_id,
+               last_speaker=last_speaker,
+               available_models=models,
+               last_message_full=recent_messages[-1] if recent_messages else None)
     
     if last_speaker and len(models) > 1:
         try:
@@ -483,6 +497,7 @@ async def websocket_endpoint(websocket: WebSocket, debate_id: str):
             # Ricevi messaggi dal client
             data = await websocket.receive_text()
             message = json.loads(data)
+            
             
             # Gestisci azione utente
             response = await debate_manager.handle_user_action(debate_id, message)

@@ -7,6 +7,7 @@ import logging
 from enum import Enum
 import time
 import requests
+import httpx
 from logging_config import get_context_logger, performance_metrics
 
 logger = get_context_logger(__name__)
@@ -211,6 +212,9 @@ class LLMQueueManager:
                         'turnNumber': request.message_count + 1
                     }
                     
+                    # Salva il messaggio nel database
+                    await self._save_message_to_database(request.debate_id, message_data)
+                    
                     # Invia il messaggio via WebSocket
                     await self._send_response_to_debate(request.debate_id, {
                         'type': 'new_message',
@@ -265,16 +269,69 @@ class LLMQueueManager:
         """Genera risposta dall'LLM"""
         try:
             # Import dinamico per evitare circular imports
-            from main import generate_debate_message
+            from main import call_openrouter, MODELS
             
-            response = await generate_debate_message({
-                'model': request.model_id,
-                'topic': request.topic,
-                'context': request.context,
-                'personality': request.personality,
-                'message_count': request.message_count
-            })
-            return response
+            # Create system prompt based on personality and debate stage
+            if request.message_count == 0:
+                # First message - opening statement
+                system_prompt = f"""You are starting a live debate about: {request.topic}
+
+                Your personality and expertise: {request.personality}
+                
+                As the first speaker, provide an opening statement that:
+                1. Clearly states your position on the topic
+                2. Presents 2-3 key arguments
+                3. Sets the tone for an engaging debate
+                
+                Keep it concise (2-3 paragraphs max) and compelling. This is your chance to make a strong first impression."""
+                
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Start the debate on: {request.topic}"}
+                ]
+            else:
+                # Continuing debate - response to previous messages
+                system_prompt = f"""You are participating in an ongoing live debate about: {request.topic}
+
+                Your personality and debate style: {request.personality}
+                
+                Previous discussion context:
+                {request.context}
+                
+                Generate a thoughtful response that:
+                1. Directly addresses specific points made by other participants
+                2. Builds upon or challenges their arguments with evidence
+                3. Maintains your unique perspective while engaging constructively
+                4. Advances the debate with new insights or counterpoints
+                5. If there is moderator guidance in the context, you MUST acknowledge and address it in your response
+                
+                Guidelines:
+                - Keep it concise (1-2 paragraphs max) and engaging
+                - Reference specific points from the previous discussion
+                - Stay true to your personality and expertise
+                - Be respectful but intellectually rigorous
+                - Avoid repeating what others have already said
+                - IMPORTANT: If the moderator has provided guidance, incorporate their direction into your response while maintaining your unique perspective"""
+                
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Based on the discussion above, provide your next contribution to the debate on: {request.topic}"}
+                ]
+            
+            response = call_openrouter(
+                model=MODELS[request.model_id],
+                messages=messages,
+                max_tokens=350 if request.message_count == 0 else 300,
+                temperature=0.8
+            )
+            
+            content = response['choices'][0]['message']['content']
+            return {
+                "model": request.model_id,
+                "content": content,
+                "topic": request.topic,
+                "message_count": request.message_count
+            }
             
         except Exception as e:
             # Incrementa retry count
@@ -338,6 +395,48 @@ class LLMQueueManager:
             await request.callback(request_id, None, error)
         
         self.stats['failed_requests'] += 1
+    
+    async def _save_message_to_database(self, debate_id: str, message_data: dict):
+        """Salva messaggio nel database tramite API Next.js"""
+        try:
+            # Determina URL API Next.js
+            frontend_url = "http://localhost:3000"
+            api_url = f"{frontend_url}/api/debates/{debate_id}/messages"
+            
+            # Prepara payload per API
+            payload = {
+                'modelId': message_data.get('modelId'),
+                'content': message_data.get('content'),
+                'timestamp': message_data.get('timestamp'),
+                'type': message_data.get('type', 'ai')
+            }
+            
+            logger.info("Saving message to database",
+                       debate_id=debate_id,
+                       model_id=payload['modelId'],
+                       content_length=len(payload['content']) if payload['content'] else 0)
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.post(api_url, json=payload, timeout=10.0)
+                
+                if response.status_code == 200:
+                    saved_message = response.json()
+                    logger.info("Message saved successfully",
+                               debate_id=debate_id,
+                               message_id=saved_message.get('id'),
+                               turn_number=saved_message.get('turnNumber'))
+                else:
+                    error_text = response.text
+                    logger.error("Failed to save message to database",
+                                debate_id=debate_id,
+                                status_code=response.status_code,
+                                error_response=error_text[:200])
+                                
+        except Exception as e:
+            logger.error("Exception saving message to database",
+                        debate_id=debate_id,
+                        error=str(e),
+                        error_type=type(e).__name__)
     
     async def _send_response_to_debate(self, debate_id: str, message: dict):
         """Invia risposta al dibattito via WebSocket"""

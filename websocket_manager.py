@@ -223,8 +223,7 @@ class DebateWebSocketManager:
         
         logger.debug("Handling user action",
                     debate_id=debate_id,
-                    action_type=action_type,
-                    user_action=action)
+                    action_type=action_type)
         
         try:
             if action_type == "heartbeat":
@@ -265,6 +264,21 @@ class DebateWebSocketManager:
                     "status": "live",
                     "started_at": timestamp
                 })
+            
+            elif action_type == "sync_debate_state":
+                # Il frontend invia lo stato del dibattito per sincronizzazione
+                debate_data = action.get("debate", {})
+                logger.debug("Debate state sync received",
+                           debate_id=debate_id,
+                           debate_status=debate_data.get("status"))
+                
+                # Aggiorna lo stato locale se necessario
+                if debate_data:
+                    await self.update_debate_state(debate_id, {
+                        "status": debate_data.get("status", "unknown"),
+                        "participants": debate_data.get("participants", []),
+                        "viewers": debate_data.get("viewers", 0)
+                    })
             
             else:
                 logger.warning("Unknown user action type",
