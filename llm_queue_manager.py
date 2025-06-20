@@ -8,6 +8,8 @@ from enum import Enum
 import time
 import requests
 import httpx
+import os
+import configparser
 from logging_config import get_context_logger, performance_metrics
 
 logger = get_context_logger(__name__)
@@ -33,7 +35,7 @@ class MessageRequest:
     callback: Optional[Callable] = None
 
 class LLMQueueManager:
-    def __init__(self, max_concurrent_requests: int = 3):
+    def __init__(self, max_concurrent_requests: int = 3, frontend_url: str = "http://localhost:3000", frontend_timeout: int = 10):
         # Code per priorità
         self.priority_queues: Dict[MessagePriority, Queue] = {
             priority: Queue() for priority in MessagePriority
@@ -63,6 +65,10 @@ class LLMQueueManager:
             'average_response_time': 0,
             'queue_wait_times': []
         }
+        
+        # Frontend configuration
+        self.frontend_url = frontend_url.rstrip('/')  # Remove trailing slash
+        self.frontend_timeout = frontend_timeout
         
         # Workers
         self.workers = []
@@ -399,9 +405,8 @@ class LLMQueueManager:
     async def _save_message_to_database(self, debate_id: str, message_data: dict):
         """Salva messaggio nel database tramite API Next.js"""
         try:
-            # Determina URL API Next.js
-            frontend_url = "http://localhost:3000"
-            api_url = f"{frontend_url}/api/debates/{debate_id}/messages"
+            # Costruisci URL API Next.js
+            api_url = f"{self.frontend_url}/api/debates/{debate_id}/messages"
             
             # Prepara payload per API
             payload = {
@@ -417,7 +422,7 @@ class LLMQueueManager:
                        content_length=len(payload['content']) if payload['content'] else 0)
             
             async with httpx.AsyncClient() as client:
-                response = await client.post(api_url, json=payload, timeout=10.0)
+                response = await client.post(api_url, json=payload, timeout=self.frontend_timeout)
                 
                 if response.status_code == 200:
                     saved_message = response.json()
@@ -517,5 +522,32 @@ class LLMQueueManager:
             }
         }
 
+# Load configuration for frontend URL
+config = configparser.ConfigParser()
+config_paths = ['config.conf', './config.conf', '../config.conf']
+config_loaded = False
+
+for path in config_paths:
+    try:
+        if config.read(path):
+            config_loaded = True
+            logger.info("Configuration loaded for LLM Queue", config_path=path)
+            break
+    except Exception as e:
+        logger.debug("Failed to read config file for LLM Queue", config_path=path, error=str(e))
+
+# Get frontend configuration
+frontend_url = os.getenv('FRONTEND_URL') or (config.get('frontend', 'url', fallback='http://localhost:3000') if config_loaded else 'http://localhost:3000')
+frontend_timeout = int(os.getenv('FRONTEND_TIMEOUT', '10')) or (int(config.get('frontend', 'timeout', fallback='10')) if config_loaded else 10)
+
+logger.info("Frontend configuration loaded", 
+           url=frontend_url, 
+           timeout=frontend_timeout,
+           source="config.conf" if config_loaded else "defaults")
+
 # Istanza globale
-llm_queue = LLMQueueManager(max_concurrent_requests=4)
+llm_queue = LLMQueueManager(
+    max_concurrent_requests=4,
+    frontend_url=frontend_url,
+    frontend_timeout=frontend_timeout
+)

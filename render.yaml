@@ -15,6 +15,10 @@ services:
         value: "https://openrouter.ai/api/v1"
       - key: OPENROUTER_TIMEOUT
         value: "60"
+      - key: FRONTEND_URL
+        value: "https://round-taible.vercel.app"  # Sostituisci con il tuo URL frontend produzione
+      - key: FRONTEND_TIMEOUT
+        value: "15"
       
     # Secrets (da configurare manualmente su Render dashboard)
     # - OPENROUTER_API_KEY (Secret)

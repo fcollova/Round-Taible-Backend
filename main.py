@@ -92,7 +92,7 @@ try:
 except:
     # Fallback per produzione
     allowed_origins = [
-        "http://localhost:3000",
+        FRONTEND_URL,
         "https://*.vercel.app",
         "https://*.railway.app"
     ]
@@ -110,6 +110,10 @@ import os
 OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY') or config.get('openrouter', 'api_key', fallback='')
 OPENROUTER_BASE_URL = os.getenv('OPENROUTER_BASE_URL') or config.get('openrouter', 'base_url', fallback='https://openrouter.ai/api/v1')
 TIMEOUT = int(os.getenv('OPENROUTER_TIMEOUT', '60')) or int(config.get('openrouter', 'timeout', fallback='60'))
+
+# Frontend configuration
+FRONTEND_URL = os.getenv('FRONTEND_URL') or config.get('frontend', 'url', fallback='http://localhost:3000')
+FRONTEND_TIMEOUT = int(os.getenv('FRONTEND_TIMEOUT', '10')) or int(config.get('frontend', 'timeout', fallback='10'))
 
 # Model mappings - load all models from config or use defaults
 MODELS = {}
@@ -152,7 +156,7 @@ def call_openrouter(model: str, messages: List[Dict[str, str]], **kwargs) -> Dic
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",  # Use full API key for request
         "Content-Type": "application/json",
-        "HTTP-Referer": "http://localhost:3000",
+        "HTTP-Referer": FRONTEND_URL,
         "X-Title": "Round TAIble"
     }
     
@@ -389,7 +393,7 @@ async def continue_debate(request: Dict[str, Any]):
     model_info = {}
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.get("http://localhost:3000/api/models")
+            response = await client.get(f"{FRONTEND_URL}/api/models")
             if response.status_code == 200:
                 model_info = response.json()
     except Exception as e:
