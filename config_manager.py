@@ -155,6 +155,10 @@ class ConfigManager:
         """Get maximum concurrent OpenRouter requests."""
         return self.config.getint('openrouter', 'max_concurrent', fallback=2)
     
+    def get_openrouter_free_model_delay(self) -> float:
+        """Get delay for free models to prevent key bans."""
+        return self.config.getfloat('openrouter', 'free_model_delay', fallback=5.0)
+    
     # Models Configuration
     def get_models(self) -> Dict[str, str]:
         """Get all configured models."""

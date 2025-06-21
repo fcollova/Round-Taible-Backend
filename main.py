@@ -132,14 +132,29 @@ def call_openrouter(model: str, messages: List[Dict[str, str]], **kwargs) -> Dic
     
     # Add configurable rate limiting delay to prevent API abuse detection
     import random
-    min_delay = config.get_openrouter_min_delay()
-    max_delay = config.get_openrouter_max_delay()
-    delay = random.uniform(min_delay, max_delay)
-    time.sleep(delay)
     
-    logger.debug("Applied rate limiting delay", 
-                request_id=request_id, 
-                delay_seconds=delay)
+    # Check if it's a free model (ends with :free)
+    is_free_model = model.endswith(':free')
+    
+    if is_free_model:
+        # Use special delay for free models to prevent key bans
+        delay = config.get_openrouter_free_model_delay()
+        logger.info("Using extended delay for free model", 
+                   model_id=model, 
+                   request_id=request_id,
+                   delay_seconds=delay,
+                   reason="free_model_protection")
+    else:
+        # Use normal randomized delay for premium models
+        min_delay = config.get_openrouter_min_delay()
+        max_delay = config.get_openrouter_max_delay()
+        delay = random.uniform(min_delay, max_delay)
+        logger.debug("Using standard delay for premium model",
+                    model_id=model,
+                    request_id=request_id, 
+                    delay_seconds=delay)
+    
+    time.sleep(delay)
     
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -151,11 +166,31 @@ def call_openrouter(model: str, messages: List[Dict[str, str]], **kwargs) -> Dic
         "X-Request-ID": request_id
     }
     
+    # Add specific headers for free models to signal conservative usage
+    if is_free_model:
+        headers["X-Model-Tier"] = "free"
+        headers["X-Rate-Limit-Aware"] = "true"
+    
     payload = {
         "model": model,
         "messages": messages,
         **kwargs
     }
+    
+    # Add OpenRouter-specific parameters for free models
+    if is_free_model:
+        # Ensure we're using free tier and add conservative parameters
+        payload.update({
+            "provider": {
+                "order": ["free"]  # Prefer free providers
+            },
+            "stream": False,  # Disable streaming for free models (more stable)
+            "max_tokens": min(payload.get("max_tokens", 300), 300)  # Limit tokens for free models
+        })
+        logger.debug("Added free model parameters", 
+                    model_id=model,
+                    request_id=request_id,
+                    max_tokens=payload["max_tokens"])
     
     # Log conversation details in debug mode
     if config.get_logging_debug():

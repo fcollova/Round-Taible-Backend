@@ -159,8 +159,10 @@ def setup_logging(debug: bool = False, level: str = "INFO",
                 '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
             )
         else:
-            # Formato JSON per produzione
-            console_formatter = JSONFormatter()
+            # Formato umano anche in produzione per console Render leggibile
+            console_formatter = DetailedFormatter(
+                '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+            )
         
         console_handler.setFormatter(console_formatter)
         root_logger.addHandler(console_handler)
