@@ -88,20 +88,30 @@ app.add_middleware(LoggingMiddleware)
 # Frontend configuration (definito prima del CORS)
 FRONTEND_URL = os.getenv('FRONTEND_URL') or config.get('frontend', 'url', fallback='http://localhost:3000')
 
-# CORS middleware
+# CORS middleware - semplificato
 allowed_origins = []
+
+# Prova prima il config file
 try:
     allowed_origins = config.get('cors', 'allowed_origins').split(',')
+    logger.info("CORS loaded from config", origins=allowed_origins)
 except:
-    # Fallback per produzione usando variabili ambiente
-    allowed_origins = [
-        FRONTEND_URL,
-        os.getenv('CORS_ORIGINS', 'http://localhost:3000').split(',')[0] if ',' in os.getenv('CORS_ORIGINS', '') else os.getenv('CORS_ORIGINS', 'http://localhost:3000')
-    ]
-    # Aggiungi origini multiple se definite
-    cors_env = os.getenv('CORS_ORIGINS', '')
-    if cors_env:
-        allowed_origins.extend(cors_env.split(','))
+    # Usa variabili ambiente
+    origins_list = []
+    
+    if FRONTEND_URL:
+        origins_list.append(FRONTEND_URL)
+    
+    cors_origins = os.getenv('CORS_ORIGINS', '')
+    if cors_origins:
+        origins_list.extend(cors_origins.split(','))
+    
+    # Fallback sicuro
+    if not origins_list:
+        origins_list = ['http://localhost:3000']
+    
+    allowed_origins = [origin.strip() for origin in origins_list]
+    logger.info("CORS loaded from environment", origins=allowed_origins, frontend_url=FRONTEND_URL)
 
 app.add_middleware(
     CORSMiddleware,
