@@ -118,6 +118,10 @@ logger.info("Models loaded from configuration",
            models=list(MODELS.keys()),
            environment=config.get_environment())
 
+# Circuit breaker for free models
+free_model_error_count = {}
+free_model_last_error_time = {}
+
 # Simple data structures instead of Pydantic models for Render compatibility
 
 def call_openrouter(model: str, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
@@ -135,6 +139,35 @@ def call_openrouter(model: str, messages: List[Dict[str, str]], **kwargs) -> Dic
     
     # Check if it's a free model (ends with :free)
     is_free_model = model.endswith(':free')
+    
+    # Circuit breaker check for free models
+    if is_free_model:
+        current_time = time.time()
+        model_key = model
+        
+        # Check if model is in cooldown
+        if model_key in free_model_last_error_time:
+            time_since_error = current_time - free_model_last_error_time[model_key]
+            error_count = free_model_error_count.get(model_key, 0)
+            cooldown_period = config.get_openrouter_free_model_cooldown()
+            max_errors = config.get_openrouter_free_model_max_errors()
+            
+            if error_count >= max_errors and time_since_error < cooldown_period:
+                remaining_cooldown = cooldown_period - time_since_error
+                logger.warning("Free model circuit breaker active - cooling down",
+                              model_id=model,
+                              request_id=request_id,
+                              error_count=error_count,
+                              remaining_cooldown=remaining_cooldown)
+                raise HTTPException(status_code=503, 
+                                  detail=f"Free model temporarily unavailable. Try again in {remaining_cooldown:.0f}s")
+            
+            # Reset error count if cooldown period has passed
+            if time_since_error >= cooldown_period:
+                free_model_error_count[model_key] = 0
+                logger.info("Free model circuit breaker reset",
+                           model_id=model,
+                           request_id=request_id)
     
     if is_free_model:
         # Use special delay for free models to prevent key bans
@@ -245,6 +278,10 @@ def call_openrouter(model: str, messages: List[Dict[str, str]], **kwargs) -> Dic
                    tokens_used=tokens_used,
                    status_code=response.status_code)
         
+        # Reset error count for free models on success
+        if is_free_model and model in free_model_error_count:
+            free_model_error_count[model] = 0
+        
         # Log conversation response in debug mode
         if config.get_logging_debug():
             response_content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
@@ -285,6 +322,16 @@ def call_openrouter(model: str, messages: List[Dict[str, str]], **kwargs) -> Dic
                            request_id=request_id,
                            response_time=response_time)
             raise HTTPException(status_code=403, detail="API key disabled or insufficient permissions")
+        
+        # Increment error count for free models
+        if is_free_model:
+            free_model_error_count[model] = free_model_error_count.get(model, 0) + 1
+            free_model_last_error_time[model] = time.time()
+            logger.warning("Free model error count incremented",
+                          model_id=model,
+                          request_id=request_id,
+                          error_count=free_model_error_count[model],
+                          max_errors=config.get_openrouter_free_model_max_errors())
         
         logger.error("OpenRouter API request failed",
                     model_id=model,

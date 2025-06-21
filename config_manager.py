@@ -159,6 +159,14 @@ class ConfigManager:
         """Get delay for free models to prevent key bans."""
         return self.config.getfloat('openrouter', 'free_model_delay', fallback=5.0)
     
+    def get_openrouter_free_model_max_errors(self) -> int:
+        """Get max consecutive errors before circuit breaker activation."""
+        return self.config.getint('openrouter', 'free_model_max_errors', fallback=3)
+    
+    def get_openrouter_free_model_cooldown(self) -> int:
+        """Get cooldown period in seconds after circuit breaker activation."""
+        return self.config.getint('openrouter', 'free_model_cooldown', fallback=30)
+    
     # Models Configuration
     def get_models(self) -> Dict[str, str]:
         """Get all configured models."""
