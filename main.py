@@ -85,17 +85,23 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(LoggingMiddleware)
 
+# Frontend configuration (definito prima del CORS)
+FRONTEND_URL = os.getenv('FRONTEND_URL') or config.get('frontend', 'url', fallback='http://localhost:3000')
+
 # CORS middleware
 allowed_origins = []
 try:
     allowed_origins = config.get('cors', 'allowed_origins').split(',')
 except:
-    # Fallback per produzione
+    # Fallback per produzione usando variabili ambiente
     allowed_origins = [
         FRONTEND_URL,
-        "https://*.vercel.app",
-        "https://*.railway.app"
+        os.getenv('CORS_ORIGINS', 'http://localhost:3000').split(',')[0] if ',' in os.getenv('CORS_ORIGINS', '') else os.getenv('CORS_ORIGINS', 'http://localhost:3000')
     ]
+    # Aggiungi origini multiple se definite
+    cors_env = os.getenv('CORS_ORIGINS', '')
+    if cors_env:
+        allowed_origins.extend(cors_env.split(','))
 
 app.add_middleware(
     CORSMiddleware,
@@ -106,13 +112,11 @@ app.add_middleware(
 )
 
 # OpenRouter configuration
-import os
 OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY') or config.get('openrouter', 'api_key', fallback='')
 OPENROUTER_BASE_URL = os.getenv('OPENROUTER_BASE_URL') or config.get('openrouter', 'base_url', fallback='https://openrouter.ai/api/v1')
 TIMEOUT = int(os.getenv('OPENROUTER_TIMEOUT', '60')) or int(config.get('openrouter', 'timeout', fallback='60'))
 
-# Frontend configuration
-FRONTEND_URL = os.getenv('FRONTEND_URL') or config.get('frontend', 'url', fallback='http://localhost:3000')
+# Frontend timeout (URL già definito sopra)
 FRONTEND_TIMEOUT = int(os.getenv('FRONTEND_TIMEOUT', '10')) or int(config.get('frontend', 'timeout', fallback='10'))
 
 # Model mappings - load all models from config or use defaults
