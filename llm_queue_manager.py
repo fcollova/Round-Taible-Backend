@@ -8,9 +8,8 @@ from enum import Enum
 import time
 import requests
 import httpx
-import os
-import configparser
 from logging_config import get_context_logger, performance_metrics
+from config_manager import get_config
 
 logger = get_context_logger(__name__)
 
@@ -277,6 +276,12 @@ class LLMQueueManager:
             # Import dinamico per evitare circular imports
             from main import call_openrouter, MODELS
             
+            logger.debug("Generating LLM response",
+                        model_id=request.model_id,
+                        topic=request.topic,
+                        message_count=request.message_count,
+                        personality=request.personality)
+            
             # Create system prompt based on personality and debate stage
             if request.message_count == 0:
                 # First message - opening statement
@@ -324,6 +329,15 @@ class LLMQueueManager:
                     {"role": "user", "content": f"Based on the discussion above, provide your next contribution to the debate on: {request.topic}"}
                 ]
             
+            # Log detailed prompt information in debug mode
+            if config.get_logging_debug():
+                logger.debug("LLM request details",
+                            model_id=request.model_id,
+                            topic=request.topic,
+                            system_prompt=messages[0]['content'] if messages else 'N/A',
+                            user_prompt=messages[1]['content'] if len(messages) > 1 else 'N/A',
+                            context_length=len(request.context) if request.context else 0)
+            
             response = call_openrouter(
                 model=MODELS[request.model_id],
                 messages=messages,
@@ -332,6 +346,14 @@ class LLMQueueManager:
             )
             
             content = response['choices'][0]['message']['content']
+            
+            logger.debug("LLM response generated successfully",
+                        model_id=request.model_id,
+                        topic=request.topic,
+                        message_count=request.message_count,
+                        response_length=len(content),
+                        response_preview=content[:100] + "..." if len(content) > 100 else content)
+            
             return {
                 "model": request.model_id,
                 "content": content,
@@ -522,28 +544,15 @@ class LLMQueueManager:
             }
         }
 
-# Load configuration for frontend URL
-config = configparser.ConfigParser()
-config_paths = ['config.conf', './config.conf', '../config.conf']
-config_loaded = False
+# Get configuration from config manager
+config = get_config()
+frontend_url = config.get_frontend_url()
+frontend_timeout = config.get_frontend_timeout()
 
-for path in config_paths:
-    try:
-        if config.read(path):
-            config_loaded = True
-            logger.info("Configuration loaded for LLM Queue", config_path=path)
-            break
-    except Exception as e:
-        logger.debug("Failed to read config file for LLM Queue", config_path=path, error=str(e))
-
-# Get frontend configuration
-frontend_url = os.getenv('FRONTEND_URL') or (config.get('frontend', 'url', fallback='http://localhost:3000') if config_loaded else 'http://localhost:3000')
-frontend_timeout = int(os.getenv('FRONTEND_TIMEOUT', '10')) or (int(config.get('frontend', 'timeout', fallback='10')) if config_loaded else 10)
-
-logger.info("Frontend configuration loaded", 
+logger.info("Frontend configuration loaded from config manager", 
            url=frontend_url, 
            timeout=frontend_timeout,
-           source="config.conf" if config_loaded else "defaults")
+           environment=config.get_environment())
 
 # Istanza globale
 llm_queue = LLMQueueManager(

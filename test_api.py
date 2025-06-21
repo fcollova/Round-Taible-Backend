@@ -1,10 +1,9 @@
 import requests
-import configparser
+from config_manager import get_config
 
-# Load config
-config = configparser.ConfigParser()
-config.read('config.conf')
-api_key = config.get('openrouter', 'api_key')
+# Load config using config manager
+config = get_config()
+api_key = config.get_openrouter_api_key()
 
 print('API Key loaded:', api_key[:10] + '...' if api_key else 'No API key')
 print('API Key length:', len(api_key) if api_key else 0)
@@ -17,19 +16,19 @@ headers = {
     'X-Title': 'Round TAIble'
 }
 
-# Test with a simple request
+# Test with a simple request using configured model
 payload = {
-    'model': 'mistralai/devstral-small:free',
+    'model': config.get_model('mistral'),
     'messages': [{'role': 'user', 'content': 'Hello, test message'}],
     'max_tokens': 100
 }
 
 try:
     response = requests.post(
-        'https://openrouter.ai/api/v1/chat/completions',
+        config.get_openrouter_base_url() + '/chat/completions',
         headers=headers,
         json=payload,
-        timeout=30
+        timeout=config.get_openrouter_timeout()
     )
     print('Status Code:', response.status_code)
     print('Response Headers:', dict(response.headers))

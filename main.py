@@ -4,37 +4,37 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from contextlib import asynccontextmanager
 import requests
 import httpx
-import configparser
 import asyncio
 import json
 from typing import List, Dict, Any, Optional
-import os
 import logging
 from datetime import datetime
 import time
 from websocket_manager import debate_manager
 from llm_queue_manager import llm_queue, MessageRequest, MessagePriority
 from logging_config import setup_logging, get_context_logger, performance_metrics
+from config_manager import get_config, ConfigurationError
 
-# Setup structured logging
-setup_logging(debug=True, log_file='./logs/backend.log')
+# Initialize configuration manager
+try:
+    config = get_config()
+    logger_initialized = False
+except ConfigurationError as e:
+    print(f"Configuration error: {e}")
+    exit(1)
+
+# Setup structured logging using configuration
+if not logger_initialized:
+    setup_logging(
+        debug=config.get_logging_debug(),
+        level=config.get_logging_level(),
+        console_output=config.get_logging_console_output(),
+        file_output=config.get_logging_file_output(),
+        log_file=config.get_logging_file_path()
+    )
+    logger_initialized = True
+
 logger = get_context_logger(__name__)
-
-# Load configuration
-config = configparser.ConfigParser()
-config_paths = ['config.conf', './config.conf', '../config.conf', '/opt/render/project/src/config.conf']
-config_loaded = False
-for path in config_paths:
-    try:
-        if config.read(path):
-            config_loaded = True
-            logger.info("Configuration loaded successfully", config_path=path)
-            break
-    except Exception as e:
-        logger.debug("Failed to read config file", config_path=path, error=str(e))
-
-if not config_loaded:
-    logger.warning("No config file found, using environment variables and defaults")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -85,33 +85,17 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(LoggingMiddleware)
 
-# Frontend configuration (definito prima del CORS)
-FRONTEND_URL = os.getenv('FRONTEND_URL') or config.get('frontend', 'url', fallback='http://localhost:3000')
+# CORS and Frontend configuration from config manager
+allowed_origins = config.get_cors_allowed_origins()
+FRONTEND_URL = config.get_frontend_url()
 
-# CORS middleware - semplificato
-allowed_origins = []
-
-# Prova prima il config file
-try:
-    allowed_origins = config.get('cors', 'allowed_origins').split(',')
-    logger.info("CORS loaded from config", origins=allowed_origins)
-except:
-    # Usa variabili ambiente
-    origins_list = []
+if not allowed_origins:
+    allowed_origins = ['http://localhost:3000']
     
-    if FRONTEND_URL:
-        origins_list.append(FRONTEND_URL)
-    
-    cors_origins = os.getenv('CORS_ORIGINS', '')
-    if cors_origins:
-        origins_list.extend(cors_origins.split(','))
-    
-    # Fallback sicuro
-    if not origins_list:
-        origins_list = ['http://localhost:3000']
-    
-    allowed_origins = [origin.strip() for origin in origins_list]
-    logger.info("CORS loaded from environment", origins=allowed_origins, frontend_url=FRONTEND_URL)
+logger.info("CORS and Frontend configuration loaded", 
+           origins=allowed_origins, 
+           frontend_url=FRONTEND_URL,
+           environment=config.get_environment())
 
 app.add_middleware(
     CORSMiddleware,
@@ -121,39 +105,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# OpenRouter configuration
-OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY') or config.get('openrouter', 'api_key', fallback='')
-OPENROUTER_BASE_URL = os.getenv('OPENROUTER_BASE_URL') or config.get('openrouter', 'base_url', fallback='https://openrouter.ai/api/v1')
-TIMEOUT = int(os.getenv('OPENROUTER_TIMEOUT', '60')) or int(config.get('openrouter', 'timeout', fallback='60'))
+# OpenRouter and Frontend configuration from config manager
+OPENROUTER_API_KEY = config.get_openrouter_api_key()
+OPENROUTER_BASE_URL = config.get_openrouter_base_url()
+TIMEOUT = config.get_openrouter_timeout()
+FRONTEND_TIMEOUT = config.get_frontend_timeout()
 
-# Frontend timeout (URL già definito sopra)
-FRONTEND_TIMEOUT = int(os.getenv('FRONTEND_TIMEOUT', '10')) or int(config.get('frontend', 'timeout', fallback='10'))
-
-# Model mappings - load all models from config or use defaults
-MODELS = {}
-try:
-    if config.has_section('models'):
-        for model_name in config.options('models'):
-            MODELS[model_name] = config.get('models', model_name)
-        logger.info("Models loaded from configuration", model_count=len(MODELS), models=list(MODELS.keys()))
-    else:
-        logger.warning("No models section in config, falling back to defaults")
-        raise configparser.NoSectionError('models')
-except (configparser.NoSectionError, AttributeError):
-    # Fallback to default models if config is missing or incomplete
-    MODELS = {
-        'gpt4': 'openai/gpt-4',
-        'claude': 'anthropic/claude-3-5-sonnet-20241022', 
-        'gemini': 'google/gemini-2.5-flash-preview-05-20',
-        'llama': 'meta-llama/llama-3.3-70b-instruct',
-        'mistral': 'mistralai/devstral-small:free',
-        'zephyr': 'deepseek/deepseek-r1-0528-qwen3-8b:free',
-        'openchat': 'sarvamai/sarvam-m:free',
-        'vicuna': 'google/gemma-3n-e4b-it:free',
-        'alpaca': 'meta-llama/llama-3.2-3b-instruct:free',
-        'wizard': 'nousresearch/deephermes-3-mistral-24b-preview:free'
-    }
-    logger.info("Using default model configuration", model_count=len(MODELS), models=list(MODELS.keys()))
+# Model mappings from config manager
+MODELS = config.get_models()
+logger.info("Models loaded from configuration", 
+           model_count=len(MODELS), 
+           models=list(MODELS.keys()),
+           environment=config.get_environment())
 
 # Simple data structures instead of Pydantic models for Render compatibility
 
@@ -179,6 +142,14 @@ def call_openrouter(model: str, messages: List[Dict[str, str]], **kwargs) -> Dic
         "messages": messages,
         **kwargs
     }
+    
+    # Log conversation details in debug mode
+    if config.get_logging_debug():
+        logger.debug("OpenRouter request payload",
+                    model_id=model,
+                    request_id=request_id,
+                    messages=messages,
+                    payload_params=kwargs)
     
     try:
         response = requests.post(
@@ -207,6 +178,15 @@ def call_openrouter(model: str, messages: List[Dict[str, str]], **kwargs) -> Dic
                    response_time=response_time,
                    tokens_used=tokens_used,
                    status_code=response.status_code)
+        
+        # Log conversation response in debug mode
+        if config.get_logging_debug():
+            response_content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
+            logger.debug("OpenRouter response content",
+                        model_id=model,
+                        request_id=request_id,
+                        response_content=response_content,
+                        full_response=result)
         
         return result
         
@@ -651,18 +631,19 @@ async def get_system_metrics():
 if __name__ == "__main__":
     import uvicorn
     
-    # Use environment variables with config fallback
-    host = os.getenv('HOST') or config.get('server', 'host', fallback='0.0.0.0')
-    port = int(os.getenv('PORT', '8000')) or int(config.get('server', 'port', fallback='8000'))
-    debug = os.getenv('DEBUG', 'false').lower() == 'true' or config.getboolean('server', 'debug', fallback=False)
+    # Use configuration manager
+    host = config.get_server_host()
+    port = config.get_server_port()
+    reload = config.get_server_reload()
     
     logger.info("Starting FastAPI server", 
                host=host, 
                port=port, 
-               debug=debug,
+               environment=config.get_environment(),
+               reload=reload,
                models_available=len(MODELS))
     
-    if debug:
+    if reload:
         uvicorn.run("main:app", host=host, port=port, reload=True)
     else:
         uvicorn.run(app, host=host, port=port)

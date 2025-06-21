@@ -51,6 +51,47 @@ class JSONFormatter(logging.Formatter):
         return json.dumps(log_entry, ensure_ascii=False)
 
 
+class DetailedFormatter(logging.Formatter):
+    """Formatter umano che include i parametri extra per debug dettagliato"""
+    
+    def format(self, record: logging.LogRecord) -> str:
+        # Base message format
+        base_msg = super().format(record)
+        
+        # Collect extra fields that are not standard log record attributes
+        standard_attrs = {
+            'name', 'msg', 'args', 'levelname', 'levelno', 'pathname', 'filename',
+            'module', 'lineno', 'funcName', 'created', 'msecs', 'relativeCreated',
+            'thread', 'threadName', 'processName', 'process', 'getMessage',
+            'exc_info', 'exc_text', 'stack_info', 'message'
+        }
+        
+        extra_fields = []
+        for key, value in record.__dict__.items():
+            if key not in standard_attrs and not key.startswith('_') and value is not None:
+                # Format complex objects nicely
+                if isinstance(value, (list, dict)):
+                    if key == 'messages' and isinstance(value, list):
+                        # Special formatting for conversation messages
+                        msg_preview = []
+                        for msg in value[:2]:  # Show first 2 messages
+                            if isinstance(msg, dict):
+                                role = msg.get('role', 'unknown')
+                                content = msg.get('content', '')
+                                preview = content[:100] + '...' if len(content) > 100 else content
+                                msg_preview.append(f"{role}: {preview}")
+                        extra_fields.append(f"{key}=[{'; '.join(msg_preview)}]")
+                    else:
+                        extra_fields.append(f"{key}={str(value)[:200]}")
+                else:
+                    extra_fields.append(f"{key}={value}")
+        
+        if extra_fields:
+            return f"{base_msg} | {' | '.join(extra_fields)}"
+        else:
+            return base_msg
+
+
 class ContextLogger:
     """Logger con supporto per contesto specifico del dibattito"""
     
@@ -80,37 +121,52 @@ class ContextLogger:
         self.logger.critical(msg, extra=self._add_context(extra, **context))
 
 
-def setup_logging(debug: bool = False, log_file: str = None) -> None:
+def setup_logging(debug: bool = False, level: str = "INFO", 
+                 console_output: bool = True, file_output: bool = True, 
+                 log_file: str = None) -> None:
     """
     Configura il sistema di logging
     
     Args:
-        debug: Se True, imposta livello DEBUG
+        debug: Se True, attiva modalità debug (sovrascrive level)
+        level: Livello di logging (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+        console_output: Se True, attiva output su console
+        file_output: Se True, attiva output su file
         log_file: Path del file di log (opzionale)
     """
-    # Livello di logging
-    level = logging.DEBUG if debug else logging.INFO
+    # Determina il livello di logging
+    if debug:
+        log_level = logging.DEBUG
+    else:
+        log_level = getattr(logging, level.upper(), logging.INFO)
     
     # Root logger
     root_logger = logging.getLogger()
-    root_logger.setLevel(level)
+    root_logger.setLevel(log_level)
     
     # Rimuovi handlers esistenti
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
     
-    # Console handler con formato umano per debug
-    if debug:
+    # Console handler
+    if console_output:
         console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setLevel(level)
-        console_formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
+        console_handler.setLevel(log_level)
+        
+        if debug:
+            # Formato umano dettagliato per debug che include parametri extra
+            console_formatter = DetailedFormatter(
+                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            )
+        else:
+            # Formato JSON per produzione
+            console_formatter = JSONFormatter()
+        
         console_handler.setFormatter(console_formatter)
         root_logger.addHandler(console_handler)
     
-    # File handler con formato JSON per produzione
-    if log_file:
+    # File handler
+    if file_output and log_file:
         # Crea directory se non esiste
         os.makedirs(os.path.dirname(log_file), exist_ok=True)
         
@@ -121,16 +177,9 @@ def setup_logging(debug: bool = False, log_file: str = None) -> None:
             backupCount=5,
             encoding='utf-8'
         )
-        file_handler.setLevel(level)
+        file_handler.setLevel(log_level)
         file_handler.setFormatter(JSONFormatter())
         root_logger.addHandler(file_handler)
-    
-    # Handler JSON per stdout in produzione (se non debug)
-    if not debug:
-        json_handler = logging.StreamHandler(sys.stdout)
-        json_handler.setLevel(level)
-        json_handler.setFormatter(JSONFormatter())
-        root_logger.addHandler(json_handler)
     
     # Configura logger specifici
     

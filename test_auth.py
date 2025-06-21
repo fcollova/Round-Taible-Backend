@@ -1,7 +1,9 @@
 import requests
+from config_manager import get_config
 
-# Test with the exact headers that OpenRouter expects
-api_key = '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'
+# Load config using config manager
+config = get_config()
+api_key = config.get_openrouter_api_key()
 
 headers = {
     'Authorization': f'Bearer {api_key}',
@@ -11,9 +13,9 @@ headers = {
 # Test a simple models endpoint first
 try:
     response = requests.get(
-        'https://openrouter.ai/api/v1/models',
+        config.get_openrouter_base_url() + '/models',
         headers=headers,
-        timeout=10
+        timeout=config.get_openrouter_timeout()
     )
     print('Models endpoint status:', response.status_code)
     if response.status_code != 200:
@@ -24,19 +26,19 @@ try:
 except Exception as e:
     print('Models request failed:', str(e))
 
-# Now test chat completion
+# Now test chat completion using configured model
 payload = {
-    'model': 'meta-llama/llama-3.2-3b-instruct:free',
+    'model': config.get_model('alpaca'),
     'messages': [{'role': 'user', 'content': 'Hello'}],
     'max_tokens': 50
 }
 
 try:
     response = requests.post(
-        'https://openrouter.ai/api/v1/chat/completions',
+        config.get_openrouter_base_url() + '/chat/completions',
         headers=headers,
         json=payload,
-        timeout=30
+        timeout=config.get_openrouter_timeout()
     )
     print('Chat endpoint status:', response.status_code)
     if response.status_code != 200:
