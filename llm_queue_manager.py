@@ -554,9 +554,9 @@ logger.info("Frontend configuration loaded from config manager",
            timeout=frontend_timeout,
            environment=config.get_environment())
 
-# Istanza globale
+# Istanza globale con concorrenza configurabile per evitare ban API key
 llm_queue = LLMQueueManager(
-    max_concurrent_requests=4,
+    max_concurrent_requests=config.get_openrouter_max_concurrent(),
     frontend_url=frontend_url,
     frontend_timeout=frontend_timeout
 )

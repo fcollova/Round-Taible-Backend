@@ -141,7 +141,19 @@ class ConfigManager:
     
     def get_openrouter_timeout(self) -> int:
         """Get OpenRouter timeout."""
-        return self.config.getint('openrouter', 'timeout', fallback=30)
+        return self.config.getint('openrouter', 'timeout', fallback=60)
+    
+    def get_openrouter_min_delay(self) -> float:
+        """Get minimum delay between OpenRouter requests."""
+        return self.config.getfloat('openrouter', 'min_delay', fallback=0.5)
+    
+    def get_openrouter_max_delay(self) -> float:
+        """Get maximum delay between OpenRouter requests."""
+        return self.config.getfloat('openrouter', 'max_delay', fallback=1.5)
+    
+    def get_openrouter_max_concurrent(self) -> int:
+        """Get maximum concurrent OpenRouter requests."""
+        return self.config.getint('openrouter', 'max_concurrent', fallback=2)
     
     # Models Configuration
     def get_models(self) -> Dict[str, str]:

@@ -38,8 +38,8 @@ logger = get_context_logger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    await llm_queue.start(num_workers=3)
+    # Startup - ridotto numero workers per evitare sovraccarico API
+    await llm_queue.start(num_workers=2)
     yield
     # Shutdown
     await llm_queue.stop()
@@ -121,7 +121,7 @@ logger.info("Models loaded from configuration",
 # Simple data structures instead of Pydantic models for Render compatibility
 
 def call_openrouter(model: str, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
-    """Make API call to OpenRouter with comprehensive logging"""
+    """Make API call to OpenRouter with comprehensive logging and rate limiting"""
     start_time = time.time()
     request_id = f"req_{int(start_time * 1000)}"
     
@@ -130,11 +130,25 @@ def call_openrouter(model: str, messages: List[Dict[str, str]], **kwargs) -> Dic
                request_id=request_id,
                message_count=len(messages))
     
+    # Add configurable rate limiting delay to prevent API abuse detection
+    import random
+    min_delay = config.get_openrouter_min_delay()
+    max_delay = config.get_openrouter_max_delay()
+    delay = random.uniform(min_delay, max_delay)
+    time.sleep(delay)
+    
+    logger.debug("Applied rate limiting delay", 
+                request_id=request_id, 
+                delay_seconds=delay)
+    
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",  # Use full API key for request
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
         "HTTP-Referer": FRONTEND_URL,
-        "X-Title": "Round TAIble"
+        "X-Title": "Round TAIble - AI Debate Platform",
+        "User-Agent": "Round-TAIble/1.0 (AI-Debate-Platform)",
+        "Accept": "application/json",
+        "X-Request-ID": request_id
     }
     
     payload = {
@@ -152,11 +166,14 @@ def call_openrouter(model: str, messages: List[Dict[str, str]], **kwargs) -> Dic
                     payload_params=kwargs)
     
     try:
+        # Use configurable timeout instead of hardcoded 30s
+        timeout = config.get_openrouter_timeout()
+        
         response = requests.post(
             f"{OPENROUTER_BASE_URL}/chat/completions",
             headers=headers,
             json=payload,
-            timeout=30
+            timeout=timeout
         )
         response_time = time.time() - start_time
         
@@ -165,6 +182,20 @@ def call_openrouter(model: str, messages: List[Dict[str, str]], **kwargs) -> Dic
         
         # Log successful request
         tokens_used = result.get('usage', {}).get('total_tokens', 0)
+        
+        # Check for rate limit warnings in response headers
+        rate_limit_remaining = response.headers.get('x-ratelimit-remaining')
+        rate_limit_reset = response.headers.get('x-ratelimit-reset')
+        
+        if rate_limit_remaining:
+            remaining = int(rate_limit_remaining)
+            if remaining < 5:  # Warn when getting close to limit
+                logger.warning("OpenRouter rate limit getting low",
+                              model_id=model,
+                              request_id=request_id,
+                              remaining_requests=remaining,
+                              reset_time=rate_limit_reset)
+        
         performance_metrics.log_llm_request(
             model=model,
             response_time=response_time,
@@ -193,6 +224,32 @@ def call_openrouter(model: str, messages: List[Dict[str, str]], **kwargs) -> Dic
     except requests.RequestException as e:
         response_time = time.time() - start_time
         status_code = getattr(response, 'status_code', None) if 'response' in locals() else None
+        
+        # Handle specific HTTP status codes
+        if status_code == 429:
+            # Rate limit exceeded - this might indicate why key gets disabled
+            logger.warning("OpenRouter rate limit exceeded - backing off",
+                          model_id=model,
+                          request_id=request_id,
+                          response_time=response_time,
+                          retry_after=getattr(response, 'headers', {}).get('retry-after', 'unknown'))
+            raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+        
+        elif status_code == 401:
+            # API key issues
+            logger.error("OpenRouter API authentication failed - check API key",
+                        model_id=model,
+                        request_id=request_id,
+                        api_key_prefix=OPENROUTER_API_KEY[:10] + "..." if OPENROUTER_API_KEY else "None")
+            raise HTTPException(status_code=401, detail="API authentication failed")
+        
+        elif status_code == 403:
+            # API key disabled/banned
+            logger.critical("OpenRouter API key disabled or banned",
+                           model_id=model,
+                           request_id=request_id,
+                           response_time=response_time)
+            raise HTTPException(status_code=403, detail="API key disabled or insufficient permissions")
         
         logger.error("OpenRouter API request failed",
                     model_id=model,
