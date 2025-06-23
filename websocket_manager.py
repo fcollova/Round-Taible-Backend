@@ -316,5 +316,108 @@ class DebateWebSocketManager:
         
         return stats
 
+    def disconnect_all_from_debate(self, debate_id: str):
+        """Disconnect all WebSocket connections from a specific debate (admin action)"""
+        if debate_id not in self.active_connections:
+            logger.warning("Attempted to disconnect all from non-existent debate", 
+                         debate_id=debate_id)
+            return
+        
+        connections = self.active_connections[debate_id].copy()
+        connection_count = len(connections)
+        
+        logger.info("Disconnecting all connections from debate", 
+                   debate_id=debate_id, 
+                   connection_count=connection_count)
+        
+        # Send final notification to all connected clients before disconnection
+        disconnect_message = {
+            "type": "admin_disconnect",
+            "message": "This debate has been closed by an administrator",
+            "debate_id": debate_id,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Send disconnect notification and close all connections
+        for websocket in connections:
+            try:
+                # Send final message
+                asyncio.create_task(websocket.send_text(json.dumps(disconnect_message)))
+                # Close connection
+                asyncio.create_task(websocket.close(code=1000, reason="Debate closed by admin"))
+                logger.debug("Closed WebSocket connection for debate", 
+                           debate_id=debate_id, 
+                           websocket_id=id(websocket))
+            except Exception as e:
+                logger.warning("Error closing WebSocket connection", 
+                             debate_id=debate_id, 
+                             websocket_id=id(websocket),
+                             error=str(e))
+        
+        # Clear all connections for this debate
+        self.active_connections.pop(debate_id, None)
+        
+        logger.info("All connections disconnected from debate", 
+                   debate_id=debate_id, 
+                   disconnected_count=connection_count)
+
+    async def broadcast_global(self, message: dict):
+        """Broadcast a message to all connected clients across all debates"""
+        total_sent = 0
+        total_failed = 0
+        
+        logger.info("Starting global broadcast", 
+                   total_debates=len(self.active_connections),
+                   message_type=message.get("type", "unknown"))
+        
+        # Iterate through all debates and their connections
+        for debate_id, connections in self.active_connections.items():
+            for websocket in connections.copy():  # Use copy to avoid modification during iteration
+                try:
+                    await websocket.send_text(json.dumps(message))
+                    total_sent += 1
+                    logger.debug("Global message sent", 
+                               debate_id=debate_id,
+                               websocket_id=id(websocket))
+                except Exception as e:
+                    total_failed += 1
+                    logger.warning("Failed to send global message", 
+                                 debate_id=debate_id,
+                                 websocket_id=id(websocket),
+                                 error=str(e))
+                    # Remove dead connection
+                    connections.discard(websocket)
+        
+        logger.info("Global broadcast completed", 
+                   messages_sent=total_sent,
+                   messages_failed=total_failed,
+                   message_type=message.get("type", "unknown"))
+        
+        return {
+            "sent": total_sent,
+            "failed": total_failed,
+            "total_attempts": total_sent + total_failed
+        }
+
+    def remove_debate_state(self, debate_id: str):
+        """Forcibly remove debate state from memory (admin action)"""
+        if debate_id in self.debate_states:
+            old_state = self.debate_states.pop(debate_id)
+            logger.warning("Debate state forcibly removed by admin", 
+                         debate_id=debate_id,
+                         old_status=old_state.get("status", "unknown"),
+                         state_keys=list(old_state.keys()))
+        else:
+            logger.warning("Attempted to remove non-existent debate state", 
+                         debate_id=debate_id)
+        
+        # Also ensure no active connections remain
+        if debate_id in self.active_connections:
+            connection_count = len(self.active_connections[debate_id])
+            self.active_connections.pop(debate_id, None)
+            logger.info("Removed active connections during state removal", 
+                       debate_id=debate_id,
+                       removed_connections=connection_count)
+
 # Istanza globale
 debate_manager = DebateWebSocketManager()

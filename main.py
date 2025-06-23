@@ -767,6 +767,376 @@ async def get_system_metrics():
                     error_type=type(e).__name__)
         raise HTTPException(status_code=500, detail="Failed to get system metrics")
 
+# ============== ADMIN ENDPOINTS ==============
+
+@app.get("/admin/status")
+async def admin_status(request: Request):
+    """Admin-specific status endpoint with enhanced information"""
+    admin_user = request.headers.get("X-Admin-User")
+    
+    logger.info("Admin status check requested", admin_user=admin_user)
+    
+    # Get comprehensive system status
+    queue_stats = llm_queue.get_queue_stats()
+    ws_stats = debate_manager.get_connection_stats()
+    
+    admin_status_data = {
+        "status": "healthy",
+        "admin_access": True,
+        "models": list(MODELS.keys()),
+        "active_debates": ws_stats['active_debates'],
+        "total_connections": ws_stats['total_connections'],
+        "queue_stats": {
+            "active_requests": queue_stats['active_requests'],
+            "pending_requests": queue_stats.get('pending_requests', 0),
+            "completed_requests": queue_stats.get('completed_requests', 0)
+        },
+        "system_info": {
+            "environment": config.get_environment(),
+            "backend_version": "1.0.0",
+            "uptime": datetime.now().isoformat()
+        },
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    logger.info("Admin status completed", admin_user=admin_user, **admin_status_data)
+    return admin_status_data
+
+@app.post("/admin/debate/pause")
+async def admin_pause_debate(request: Request, admin_request: dict):
+    """Admin endpoint to pause an active debate"""
+    admin_user = request.headers.get("X-Admin-User")
+    admin_action = request.headers.get("X-Admin-Action", "pause")
+    
+    debate_id = admin_request.get("debate_id")
+    reason = admin_request.get("reason", "Paused by admin")
+    
+    logger.info("Admin pause debate requested", 
+               admin_user=admin_user, 
+               debate_id=debate_id, 
+               reason=reason)
+    
+    if not debate_id:
+        raise HTTPException(status_code=400, detail="debate_id is required")
+    
+    try:
+        # Update debate state to paused
+        await debate_manager.update_debate_state(debate_id, {
+            "status": "paused",
+            "admin_action": admin_action,
+            "admin_user": admin_user,
+            "reason": reason,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+        # Broadcast pause notification to all connected clients
+        await debate_manager.broadcast_to_debate(debate_id, {
+            "type": "admin_action",
+            "action": "pause",
+            "status": "paused",
+            "reason": reason,
+            "admin": admin_user,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+        logger.info("Debate paused successfully", 
+                   admin_user=admin_user, 
+                   debate_id=debate_id)
+        
+        return {
+            "success": True,
+            "action": "pause",
+            "debate_id": debate_id,
+            "new_status": "paused",
+            "message": f"Debate {debate_id} paused successfully"
+        }
+        
+    except Exception as e:
+        logger.error("Failed to pause debate", 
+                    admin_user=admin_user, 
+                    debate_id=debate_id, 
+                    error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to pause debate: {str(e)}")
+
+@app.post("/admin/debate/resume")
+async def admin_resume_debate(request: Request, admin_request: dict):
+    """Admin endpoint to resume a paused debate"""
+    admin_user = request.headers.get("X-Admin-User")
+    admin_action = request.headers.get("X-Admin-Action", "resume")
+    
+    debate_id = admin_request.get("debate_id")
+    reason = admin_request.get("reason", "Resumed by admin")
+    
+    logger.info("Admin resume debate requested", 
+               admin_user=admin_user, 
+               debate_id=debate_id, 
+               reason=reason)
+    
+    if not debate_id:
+        raise HTTPException(status_code=400, detail="debate_id is required")
+    
+    try:
+        # Update debate state to active
+        await debate_manager.update_debate_state(debate_id, {
+            "status": "active",
+            "admin_action": admin_action,
+            "admin_user": admin_user,
+            "reason": reason,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+        # Broadcast resume notification to all connected clients
+        await debate_manager.broadcast_to_debate(debate_id, {
+            "type": "admin_action",
+            "action": "resume",
+            "status": "active",
+            "reason": reason,
+            "admin": admin_user,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+        logger.info("Debate resumed successfully", 
+                   admin_user=admin_user, 
+                   debate_id=debate_id)
+        
+        return {
+            "success": True,
+            "action": "resume",
+            "debate_id": debate_id,
+            "new_status": "active",
+            "message": f"Debate {debate_id} resumed successfully"
+        }
+        
+    except Exception as e:
+        logger.error("Failed to resume debate", 
+                    admin_user=admin_user, 
+                    debate_id=debate_id, 
+                    error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to resume debate: {str(e)}")
+
+@app.post("/admin/debate/finish")
+async def admin_finish_debate(request: Request, admin_request: dict):
+    """Admin endpoint to finish/terminate a debate"""
+    admin_user = request.headers.get("X-Admin-User")
+    admin_action = request.headers.get("X-Admin-Action", "finish")
+    
+    debate_id = admin_request.get("debate_id")
+    reason = admin_request.get("reason", "Finished by admin")
+    
+    logger.info("Admin finish debate requested", 
+               admin_user=admin_user, 
+               debate_id=debate_id, 
+               reason=reason)
+    
+    if not debate_id:
+        raise HTTPException(status_code=400, detail="debate_id is required")
+    
+    try:
+        # Update debate state to finished
+        await debate_manager.update_debate_state(debate_id, {
+            "status": "finished",
+            "admin_action": admin_action,
+            "admin_user": admin_user,
+            "reason": reason,
+            "timestamp": datetime.now().isoformat(),
+            "ended_by_admin": True
+        })
+        
+        # Clear any pending LLM requests for this debate
+        # Note: This would require additional implementation in llm_queue_manager
+        
+        # Broadcast finish notification to all connected clients
+        await debate_manager.broadcast_to_debate(debate_id, {
+            "type": "admin_action",
+            "action": "finish",
+            "status": "finished",
+            "reason": reason,
+            "admin": admin_user,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+        logger.info("Debate finished successfully", 
+                   admin_user=admin_user, 
+                   debate_id=debate_id)
+        
+        return {
+            "success": True,
+            "action": "finish",
+            "debate_id": debate_id,
+            "new_status": "finished",
+            "message": f"Debate {debate_id} finished successfully"
+        }
+        
+    except Exception as e:
+        logger.error("Failed to finish debate", 
+                    admin_user=admin_user, 
+                    debate_id=debate_id, 
+                    error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to finish debate: {str(e)}")
+
+@app.post("/admin/debate/delete")
+async def admin_delete_debate(request: Request, admin_request: dict):
+    """Admin endpoint to soft delete a debate"""
+    admin_user = request.headers.get("X-Admin-User")
+    admin_action = request.headers.get("X-Admin-Action", "delete")
+    
+    debate_id = admin_request.get("debate_id")
+    reason = admin_request.get("reason", "Deleted by admin")
+    
+    logger.info("Admin delete debate requested", 
+               admin_user=admin_user, 
+               debate_id=debate_id, 
+               reason=reason)
+    
+    if not debate_id:
+        raise HTTPException(status_code=400, detail="debate_id is required")
+    
+    try:
+        # Update debate state to deleted (soft delete)
+        await debate_manager.update_debate_state(debate_id, {
+            "status": "deleted",
+            "admin_action": admin_action,
+            "admin_user": admin_user,
+            "reason": reason,
+            "timestamp": datetime.now().isoformat(),
+            "deleted_by_admin": True
+        })
+        
+        # Broadcast delete notification to all connected clients
+        await debate_manager.broadcast_to_debate(debate_id, {
+            "type": "admin_action",
+            "action": "delete",
+            "status": "deleted",
+            "reason": reason,
+            "admin": admin_user,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+        # Disconnect all WebSocket connections for this debate
+        debate_manager.disconnect_all_from_debate(debate_id)
+        
+        logger.warning("Debate soft deleted by admin", 
+                      admin_user=admin_user, 
+                      debate_id=debate_id, 
+                      reason=reason)
+        
+        return {
+            "success": True,
+            "action": "delete",
+            "debate_id": debate_id,
+            "new_status": "deleted",
+            "message": f"Debate {debate_id} deleted successfully (soft delete)"
+        }
+        
+    except Exception as e:
+        logger.error("Failed to delete debate", 
+                    admin_user=admin_user, 
+                    debate_id=debate_id, 
+                    error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to delete debate: {str(e)}")
+
+@app.post("/admin/debate/permanent_delete")
+async def admin_permanent_delete_debate(request: Request, admin_request: dict):
+    """Admin endpoint to permanently delete a debate (WARNING: destructive)"""
+    admin_user = request.headers.get("X-Admin-User")
+    admin_action = request.headers.get("X-Admin-Action", "permanent_delete")
+    
+    debate_id = admin_request.get("debate_id")
+    reason = admin_request.get("reason", "Permanently deleted by admin")
+    
+    logger.warning("Admin PERMANENT delete debate requested", 
+                  admin_user=admin_user, 
+                  debate_id=debate_id, 
+                  reason=reason)
+    
+    if not debate_id:
+        raise HTTPException(status_code=400, detail="debate_id is required")
+    
+    try:
+        # Broadcast final notification before destruction
+        await debate_manager.broadcast_to_debate(debate_id, {
+            "type": "admin_action",
+            "action": "permanent_delete",
+            "status": "permanently_deleted",
+            "reason": reason,
+            "admin": admin_user,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+        # Disconnect all WebSocket connections for this debate
+        debate_manager.disconnect_all_from_debate(debate_id)
+        
+        # Remove debate state from memory (permanent deletion from backend state)
+        if hasattr(debate_manager, 'remove_debate_state'):
+            debate_manager.remove_debate_state(debate_id)
+        
+        logger.critical("Debate permanently deleted by admin", 
+                       admin_user=admin_user, 
+                       debate_id=debate_id, 
+                       reason=reason)
+        
+        return {
+            "success": True,
+            "action": "permanent_delete",
+            "debate_id": debate_id,
+            "new_status": "permanently_deleted",
+            "message": f"Debate {debate_id} permanently deleted"
+        }
+        
+    except Exception as e:
+        logger.error("Failed to permanently delete debate", 
+                    admin_user=admin_user, 
+                    debate_id=debate_id, 
+                    error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to permanently delete debate: {str(e)}")
+
+@app.post("/ws/admin/broadcast")
+async def admin_websocket_broadcast(admin_request: dict):
+    """Admin endpoint for broadcasting messages via WebSocket"""
+    message_type = admin_request.get("type", "admin_message")
+    data = admin_request.get("data", {})
+    
+    logger.info("Admin WebSocket broadcast requested", 
+               message_type=message_type, 
+               admin_user=data.get("admin_user"))
+    
+    try:
+        # If it's a debate-specific action, broadcast to that debate
+        if "debate_id" in data:
+            debate_id = data["debate_id"]
+            await debate_manager.broadcast_to_debate(debate_id, {
+                "type": message_type,
+                "data": data,
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            logger.info("Admin broadcast to debate completed", 
+                       debate_id=debate_id, 
+                       message_type=message_type)
+        else:
+            # Global broadcast to all connected clients
+            await debate_manager.broadcast_global({
+                "type": message_type,
+                "data": data,
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            logger.info("Admin global broadcast completed", 
+                       message_type=message_type)
+        
+        return {
+            "success": True,
+            "message": "Broadcast sent successfully",
+            "type": message_type,
+            "recipients": data.get("debate_id", "all_connected_clients")
+        }
+        
+    except Exception as e:
+        logger.error("Failed to send admin broadcast", 
+                    message_type=message_type, 
+                    error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to send broadcast: {str(e)}")
+
 if __name__ == "__main__":
     import uvicorn
     
