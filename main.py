@@ -227,14 +227,41 @@ async def continue_debate(request: Request):
 @app.websocket("/ws/debates/{debate_id}")
 async def websocket_endpoint(websocket: WebSocket, debate_id: str):
     """WebSocket endpoint for real-time debate communication"""
-    await ws_manager.connect(websocket, debate_id)
     try:
+        await ws_manager.connect(websocket, debate_id)
+        logger.info("WebSocket connected", 
+                   debate_id=debate_id,
+                   client_ip=websocket.client.host if websocket.client else "unknown")
+        
         while True:
-            data = await websocket.receive_text()
-            message = json.loads(data)
-            await ws_manager.handle_user_action(debate_id, message)
-    except WebSocketDisconnect:
-        await ws_manager.disconnect(websocket, debate_id)
+            try:
+                data = await websocket.receive_text()
+                message = json.loads(data)
+                await ws_manager.handle_user_action(debate_id, message)
+            except json.JSONDecodeError as e:
+                logger.warning("Invalid JSON received via WebSocket",
+                             debate_id=debate_id,
+                             error=str(e))
+                continue
+                
+    except WebSocketDisconnect as e:
+        logger.info("WebSocket disconnected",
+                   debate_id=debate_id,
+                   disconnect_code=e.code,
+                   reason=e.reason if hasattr(e, 'reason') else 'unknown')
+    except Exception as e:
+        logger.error("WebSocket error",
+                    debate_id=debate_id,
+                    error=str(e),
+                    error_type=type(e).__name__)
+    finally:
+        # Always ensure cleanup happens
+        try:
+            await ws_manager.disconnect(websocket, debate_id)
+        except Exception as cleanup_error:
+            logger.warning("Error during WebSocket cleanup",
+                          debate_id=debate_id,
+                          error=str(cleanup_error))
 
 
 # ========================================

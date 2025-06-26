@@ -59,7 +59,7 @@ class DebateWebSocketManager:
                         error_type=type(e).__name__)
             raise
     
-    def disconnect(self, websocket: WebSocket, debate_id: str):
+    async def disconnect(self, websocket: WebSocket, debate_id: str):
         websocket_id = id(websocket)
         was_connected = False
         
@@ -87,10 +87,10 @@ class DebateWebSocketManager:
         
         if was_connected:
             # Aggiorna contatore viewer
-            asyncio.create_task(self.update_viewer_count(debate_id))
+            await self.update_viewer_count(debate_id)
             
             # Log metriche aggiornate
-            asyncio.create_task(self._log_disconnect_metrics(debate_id))
+            await self._log_disconnect_metrics(debate_id)
         else:
             logger.warning("Attempted to disconnect non-existent WebSocket",
                           debate_id=debate_id,
