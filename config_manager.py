@@ -168,19 +168,7 @@ class ConfigManager:
         return self.config.getint('openrouter', 'free_model_cooldown', fallback=30)
     
     # Models Configuration
-    def get_models(self) -> Dict[str, str]:
-        """Get all configured models."""
-        if not self.config.has_section('models'):
-            raise ConfigurationError("Models section not found in configuration")
-        
-        return dict(self.config.items('models'))
-    
-    def get_model(self, model_name: str) -> str:
-        """Get specific model configuration."""
-        model_id = self.config.get('models', model_name, fallback='')
-        if not model_id:
-            raise ConfigurationError(f"Model '{model_name}' not configured")
-        return model_id
+    # Models are now retrieved from frontend API /api/models - no longer in config files
     
     # Frontend Configuration
     def get_frontend_url(self) -> str:
@@ -211,7 +199,7 @@ class ConfigManager:
     
     def validate_required_config(self):
         """Validate that all required configuration is present."""
-        required_sections = ['server', 'openrouter', 'models', 'logging']
+        required_sections = ['server', 'openrouter', 'logging']
         missing_sections = []
         
         for section in required_sections:
@@ -223,8 +211,7 @@ class ConfigManager:
         
         # Validate specific required keys
         required_keys = {
-            'openrouter': ['api_key'],
-            'models': ['gpt4', 'claude', 'gemini', 'llama']
+            'openrouter': ['api_key']
         }
         
         missing_keys = []

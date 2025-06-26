@@ -269,6 +269,17 @@ class PerformanceMetrics:
             active_debates=active_debates,
             **context
         )
+    
+    def log_openrouter_call(self, model: str, response_time: float, 
+                           status_code: int = None, **context):
+        """Log chiamata OpenRouter"""
+        self.logger.info(
+            f"OpenRouter {model} - {status_code or 'N/A'} in {response_time:.3f}s",
+            model_id=model,
+            response_time=response_time,
+            status_code=status_code,
+            **context
+        )
 
 
 # Istanza globale per metriche

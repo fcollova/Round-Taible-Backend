@@ -202,9 +202,17 @@ class DebateWebSocketManager:
         # Aggiorna contatore messaggi
         if debate_id in self.debate_states:
             current_count = self.debate_states[debate_id].get("message_count", 0)
+            last_speaker = None
+            
+            # Determina last_speaker in base al tipo di messaggio
+            if message.get("type") == "moderator":
+                last_speaker = "moderator"
+            else:
+                last_speaker = message.get("ai") or message.get("modelId")
+            
             await self.update_debate_state(debate_id, {
                 "message_count": current_count + 1,
-                "last_speaker": message.get("ai")
+                "last_speaker": last_speaker
             })
     
     async def send_vote_update(self, debate_id: str, message_id: str, votes: dict):
@@ -264,6 +272,19 @@ class DebateWebSocketManager:
                     "status": "live",
                     "started_at": timestamp
                 })
+            
+            elif action_type == "new_message":
+                # Messaggio del moderatore da propagare
+                message_data = action.get("data", {})
+                message_type = message_data.get("type", "ai")
+                
+                logger.info("New message broadcast received",
+                           debate_id=debate_id,
+                           message_type=message_type,
+                           has_content=bool(message_data.get("content")))
+                
+                # Propaga il messaggio a tutti i client connessi
+                await self.send_new_message(debate_id, message_data)
             
             elif action_type == "sync_debate_state":
                 # Il frontend invia lo stato del dibattito per sincronizzazione

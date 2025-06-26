@@ -28,7 +28,7 @@ The server will start on `http://localhost:8000`
 - `GET /health` - Detailed health status with available models
 - `GET /models` - List available LLM models
 - `POST /chat/completions` - General chat completions endpoint
-- `POST /debate/generate` - Generate debate messages with context
+- ~~`POST /debate/generate`~~ - (DEPRECATO) Sostituito da `/debate/continue` con prompt configurabili
 
 ## Configuration
 
