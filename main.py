@@ -227,8 +227,10 @@ async def continue_debate(request: Request):
 @app.websocket("/ws/debates/{debate_id}")
 async def websocket_endpoint(websocket: WebSocket, debate_id: str):
     """WebSocket endpoint for real-time debate communication"""
+    connection_established = False
     try:
         await ws_manager.connect(websocket, debate_id)
+        connection_established = True
         logger.info("WebSocket connected", 
                    debate_id=debate_id,
                    client_ip=websocket.client.host if websocket.client else "unknown")
@@ -255,13 +257,14 @@ async def websocket_endpoint(websocket: WebSocket, debate_id: str):
                     error=str(e),
                     error_type=type(e).__name__)
     finally:
-        # Always ensure cleanup happens
-        try:
-            await ws_manager.disconnect(websocket, debate_id)
-        except Exception as cleanup_error:
-            logger.warning("Error during WebSocket cleanup",
-                          debate_id=debate_id,
-                          error=str(cleanup_error))
+        # Only cleanup if connection was established
+        if connection_established:
+            try:
+                await ws_manager.disconnect(websocket, debate_id)
+            except Exception as cleanup_error:
+                logger.warning("Error during WebSocket cleanup",
+                              debate_id=debate_id,
+                              error=str(cleanup_error))
 
 
 # ========================================

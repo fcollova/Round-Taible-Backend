@@ -86,8 +86,9 @@ class DebateWebSocketManager:
                               remaining_connections=remaining_connections)
         
         if was_connected:
-            # Aggiorna contatore viewer
-            await self.update_viewer_count(debate_id)
+            # Aggiorna contatore viewer solo se ci sono ancora connessioni attive
+            if debate_id in self.active_connections:
+                await self.update_viewer_count(debate_id)
             
             # Log metriche aggiornate
             await self._log_disconnect_metrics(debate_id)
@@ -95,6 +96,9 @@ class DebateWebSocketManager:
             logger.warning("Attempted to disconnect non-existent WebSocket",
                           debate_id=debate_id,
                           websocket_id=websocket_id)
+        
+        # Always return successfully
+        return True
     
     async def _log_disconnect_metrics(self, debate_id: str):
         """Log metriche dopo disconnessione"""
