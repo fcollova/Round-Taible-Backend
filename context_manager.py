@@ -7,11 +7,11 @@ import httpx
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from datetime import datetime
-from config_manager import ConfigManager
+from config_manager import get_config
 from logging_config import get_context_logger
 
 logger = get_context_logger(__name__)
-config = ConfigManager()
+config = get_config()
 
 
 @dataclass

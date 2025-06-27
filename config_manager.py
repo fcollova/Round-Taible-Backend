@@ -49,6 +49,8 @@ class ConfigManager:
     and configuration loading from appropriate config files.
     """
     
+    _config_loaded = False  # Class variable to track if config was already loaded
+    
     def __init__(self, config_dir: Optional[str] = None):
         """
         Initialize ConfigManager.
@@ -79,11 +81,14 @@ class ConfigManager:
         try:
             # Load base config first (common configurations)
             self.config.read(base_config_file)
-            print(f"ConfigManager: Loaded base configuration from: {base_config_file}")
+            if not ConfigManager._config_loaded:
+                print(f"ConfigManager: Loaded base configuration from: {base_config_file}")
             
             # Load environment-specific config (overrides base config)
             self.config.read(env_config_file)
-            print(f"ConfigManager: Loaded environment configuration from: {env_config_file}")
+            if not ConfigManager._config_loaded:
+                print(f"ConfigManager: Loaded environment configuration from: {env_config_file}")
+                ConfigManager._config_loaded = True
             
             self.config_file_path = env_config_file  # Keep track of the specific config for reference
             
