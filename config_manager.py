@@ -62,24 +62,33 @@ class ConfigManager:
         self._load_config()
     
     def _load_config(self):
-        """Load configuration from appropriate config file based on environment."""
-        # Try environment-specific config first
-        config_file = self.config_dir / f'config.{self.environment}.conf'
+        """Load configuration from both common and environment-specific config files."""
+        # Base config file (common configurations)
+        base_config_file = self.config_dir / 'config.conf'
         
-        if not config_file.exists():
-            # Fallback to default config.conf
-            config_file = self.config_dir / 'config.conf'
+        # Environment-specific config file
+        env_config_file = self.config_dir / f'config.{self.environment}.conf'
+        
+        # Check that both files exist
+        if not base_config_file.exists():
+            raise ConfigurationError(f"Base configuration file not found: {base_config_file}")
             
-        if not config_file.exists():
-            raise ConfigurationError(f"No configuration file found. Looked for: config.{self.environment}.conf and config.conf")
+        if not env_config_file.exists():
+            raise ConfigurationError(f"Environment-specific configuration file not found: {env_config_file}")
         
         try:
-            self.config.read(config_file)
-            self.config_file_path = config_file
-            # Note: Cannot use logging here as it may not be set up yet
-            print(f"ConfigManager: Loaded configuration from: {config_file}")
+            # Load base config first (common configurations)
+            self.config.read(base_config_file)
+            print(f"ConfigManager: Loaded base configuration from: {base_config_file}")
+            
+            # Load environment-specific config (overrides base config)
+            self.config.read(env_config_file)
+            print(f"ConfigManager: Loaded environment configuration from: {env_config_file}")
+            
+            self.config_file_path = env_config_file  # Keep track of the specific config for reference
+            
         except Exception as e:
-            raise ConfigurationError(f"Failed to load configuration from {config_file}: {e}")
+            raise ConfigurationError(f"Failed to load configuration files: {e}")
     
     def get_environment(self) -> str:
         """Get the current environment."""
