@@ -50,6 +50,7 @@ class ConfigManager:
     """
     
     _config_loaded = False  # Class variable to track if config was already loaded
+    _instance_count = 0  # Debug: conta le istanze create
     
     def __init__(self, config_dir: Optional[str] = None):
         """
@@ -58,6 +59,9 @@ class ConfigManager:
         Args:
             config_dir: Directory containing config files. Defaults to current directory.
         """
+        ConfigManager._instance_count += 1
+        print(f"ConfigManager: Creating instance #{ConfigManager._instance_count}")
+        
         self.config_dir = Path(config_dir or '.')
         self.environment = detect_environment()
         self.config = configparser.ConfigParser()
@@ -81,14 +85,14 @@ class ConfigManager:
         try:
             # Load base config first (common configurations)
             self.config.read(base_config_file)
-            if not ConfigManager._config_loaded:
-                print(f"ConfigManager: Loaded base configuration from: {base_config_file}")
             
             # Load environment-specific config (overrides base config)
             self.config.read(env_config_file)
-            if not ConfigManager._config_loaded:
+            
+            # Log only for the first instance
+            if ConfigManager._instance_count == 1:
+                print(f"ConfigManager: Loaded base configuration from: {base_config_file}")
                 print(f"ConfigManager: Loaded environment configuration from: {env_config_file}")
-                ConfigManager._config_loaded = True
             
             self.config_file_path = env_config_file  # Keep track of the specific config for reference
             
