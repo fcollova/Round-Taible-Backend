@@ -2,7 +2,7 @@ import asyncio
 from asyncio import Queue, Lock
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Callable
+from typing import Dict, List, Optional, Callable, Any
 import logging
 from enum import Enum
 import time
@@ -34,6 +34,8 @@ class MessageRequest:
     max_retries: int = 3
     retry_count: int = 0
     callback: Optional[Callable] = None
+    original_model_id: Optional[str] = None
+    model_info: Optional[Dict[str, Any]] = None
 
 class LLMQueueManager:
     def __init__(self, max_concurrent_requests: int = 3, frontend_url: str = "http://localhost:3000", frontend_timeout: int = 10):
@@ -213,7 +215,8 @@ class LLMQueueManager:
                     
                     # Invia risposta via WebSocket
                     message_data = {
-                        'modelId': request.model_id,
+                        'modelId': request.original_model_id or request.model_id,  # Usa l'ID originale se disponibile
+                        'ai': request.original_model_id or request.model_id,       # Retrocompatibilità 
                         'content': response['content'],
                         'timestamp': datetime.now().isoformat(),
                         'type': 'ai',
@@ -399,13 +402,27 @@ Guidelines:
             dynamic_values = {
                 'topic': request.topic,
                 'personality': request.personality,
-                'context': request.context if hasattr(request, 'context') else '',
-                'tone': "professional yet engaging",
-                'response_length': "2-3 paragraphs",
-                'response_approach': "analytical and evidence-based",
-                'guidelines': "Stay focused, be respectful, and provide clear reasoning",
-                'additional_instructions': "Stay focused on the debate topic and provide reasoned arguments."
+                'context': request.context if hasattr(request, 'context') else ''
             }
+            
+            # Aggiungi parametri specifici per tipo di prompt
+            if prompt_name == 'opening_statement':
+                dynamic_values.update({
+                    'tone': "professional yet engaging",
+                    'response_length': "2-3 paragraphs",
+                    'additional_instructions': "Stay focused on the debate topic and provide reasoned arguments."
+                })
+            elif prompt_name == 'continuing_debate':
+                dynamic_values.update({
+                    'response_approach': "analytical and engaging",
+                    'guidelines': """Linee guida:
+- Mantieni concisione (massimo 1-2 paragrafi) e coinvolgimento
+- Fai riferimento a punti specifici della discussione precedente
+- Rimani fedele alla tua personalità ed esperienza
+- Sii rispettoso ma intellettualmente rigoroso
+- Evita di ripetere quello che altri hanno già detto
+- IMPORTANTE: Se il moderatore ha fornito una guida, incorpora la loro direzione nella tua risposta mantenendo la tua prospettiva unica"""
+                })
             
             # Formatta i prompt utilizzando il PromptManager
             system_prompt = prompt_manager.format_system_prompt(prompt_config, **dynamic_values)
@@ -521,7 +538,8 @@ Guidelines:
         # Crea messaggio di fallback con turnNumber corretto
         message_data = {
             'id': f"{request_id}_fallback",
-            'modelId': request.model_id,
+            'modelId': request.original_model_id or request.model_id,  # Usa l'ID originale se disponibile
+            'ai': request.original_model_id or request.model_id,       # Retrocompatibilità
             'content': fallback_content,
             'timestamp': datetime.now().isoformat(),
             'type': 'fallback',

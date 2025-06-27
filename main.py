@@ -48,7 +48,8 @@ if not logger_initialized:
         level=config.get_logging_level(),
         console_output=config.get_logging_console_output(),
         file_output=config.get_logging_file_output(),
-        log_file=config.get_logging_file_path()
+        log_file=config.get_logging_file_path(),
+        module_levels=config.get_module_logging_levels()
     )
     logger_initialized = True
 
@@ -201,6 +202,17 @@ async def chat_completions(request: Request):
         
     except Exception as e:
         logger.error("Chat completion failed", error=str(e), model=request.get("model"))
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/reset-model-state/{model_id}")
+async def reset_model_state(model_id: str):
+    """Reset the state of a specific model (useful when model is blocked due to errors)"""
+    try:
+        openrouter_client.reset_model_state(model_id)
+        logger.info("Model state reset", model=model_id)
+        return {"status": "success", "message": f"Model {model_id} state has been reset"}
+    except Exception as e:
+        logger.error("Failed to reset model state", model=model_id, error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 

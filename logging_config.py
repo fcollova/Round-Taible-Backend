@@ -123,7 +123,7 @@ class ContextLogger:
 
 def setup_logging(debug: bool = False, level: str = "INFO", 
                  console_output: bool = True, file_output: bool = True, 
-                 log_file: str = None) -> None:
+                 log_file: str = None, module_levels: Dict[str, str] = None) -> None:
     """
     Configura il sistema di logging
     
@@ -133,6 +133,7 @@ def setup_logging(debug: bool = False, level: str = "INFO",
         console_output: Se True, attiva output su console
         file_output: Se True, attiva output su file
         log_file: Path del file di log (opzionale)
+        module_levels: Dict con livelli specifici per modulo
     """
     # Determina il livello di logging
     if debug:
@@ -202,9 +203,16 @@ def setup_logging(debug: bool = False, level: str = "INFO",
         'openrouter_client'
     ]
     
+    # Applica livelli di default o specifici per modulo
+    if module_levels is None:
+        module_levels = {}
+        
     for logger_name in app_loggers:
         logger = logging.getLogger(logger_name)
-        logger.setLevel(level)
+        # Usa livello specifico del modulo se presente, altrimenti livello generale
+        module_level = module_levels.get(logger_name, level)
+        logger_level = getattr(logging, module_level.upper(), log_level)
+        logger.setLevel(logger_level)
 
 
 def get_context_logger(name: str) -> ContextLogger:

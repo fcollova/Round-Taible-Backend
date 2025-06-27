@@ -44,8 +44,7 @@ class DebateManager:
                    topic=topic,
                    message_count=len(recent_messages))
         
-        # Fetch model information from the database
-        model_info = await self._fetch_model_info()
+        # Model information is now handled directly via models_service
         
         # Debug: Log dei recent_messages per verificare il formato
         logger.info("Analyzing recent messages for turn determination",
@@ -58,37 +57,49 @@ class DebateManager:
                        'type': msg.get('type', 'no-type')
                    } for msg in recent_messages[:3]])
         
-        # Usa context_manager per costruire il contesto
+        # Recupera i messaggi reali dal database tramite API
+        actual_messages = await self._get_debate_messages(debate_id)
+        
+        logger.info("Retrieved actual messages from database",
+                   debate_id=debate_id,
+                   actual_messages_count=len(actual_messages),
+                   frontend_messages_count=len(recent_messages))
+        
+        # Usa context_manager per costruire il contesto con i messaggi reali
         debate_context = await context_manager.build_debate_context(
             debate_id=debate_id,
             topic=topic,
-            recent_messages=recent_messages
+            recent_messages=actual_messages
         )
         
         # Determina chi deve parlare (round-robin dalla lista dei modelli)
-        next_model = await self._determine_next_speaker(models, recent_messages)
+        next_model_id = await self._determine_next_speaker(models, actual_messages)
         
-        # Converte il model name nel formato appropriato per OpenRouter
-        model_name = self._convert_model_name(next_model)
+        # Ottieni informazioni complete del modello
+        next_model_info = await models_service.get_model(next_model_id)
+        if not next_model_info:
+            raise HTTPException(status_code=400, detail=f"Model {next_model_id} not found")
         
         # Formatta il contesto per il prompt
         context = context_manager.format_context_for_prompt(debate_context)
         
-        # Get personality from database
-        personality = f"AI model {next_model}"
-        if next_model in model_info:
-            personality = model_info[next_model].get('description', personality)
+        # Get personality from model info
+        personality = next_model_info.get('description', f"AI model {next_model_info['name']}")
         
         # Crea richiesta per la coda LLM
         message_request = MessageRequest(
             debate_id=debate_id,
-            model_id=model_name,
+            model_id=next_model_info['openrouterId'],  # ID per OpenRouter
             context=context,
             topic=topic,
             personality=personality,
             message_count=debate_context.message_count,
             priority=MessagePriority.NORMAL
         )
+        
+        # Aggiungi informazioni del modello originale per il frontend
+        message_request.original_model_id = next_model_id  # ID originale del database
+        message_request.model_info = next_model_info  # Informazioni complete
         
         # Log context summary per debugging
         context_summary = context_manager.get_context_summary(debate_context)
@@ -101,7 +112,8 @@ class DebateManager:
             "status": "queued",
             "request_id": request_id,
             "debate_id": debate_id,
-            "next_model": next_model,
+            "next_model": next_model_id,
+            "next_model_name": next_model_info['name'],
             "message_count": debate_context.message_count,
             "context_messages": len(debate_context.messages)
         }
@@ -326,19 +338,35 @@ class DebateManager:
                         error=str(e))
             raise HTTPException(status_code=500, detail=f"Failed to {action_type} debate: {str(e)}")
 
-    async def _fetch_model_info(self) -> Dict[str, Any]:
-        """Fetch model information from the database"""
+
+    async def _get_debate_messages(self, debate_id: str) -> List[Dict]:
+        """Recupera i messaggi del dibattito dal database tramite API"""
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.get(f"{self.frontend_url}/api/models")
+                response = await client.get(
+                    f"{self.frontend_url}/api/debates/{debate_id}/messages",
+                    timeout=self.frontend_timeout
+                )
+                
                 if response.status_code == 200:
-                    return response.json()
+                    messages = response.json()
+                    logger.debug("Successfully retrieved messages from database",
+                               debate_id=debate_id,
+                               message_count=len(messages))
+                    return messages
                 else:
-                    logger.warning("Failed to fetch model info", status_code=response.status_code)
-                    return {}
+                    logger.warning("Failed to retrieve messages from database",
+                                 debate_id=debate_id,
+                                 status_code=response.status_code,
+                                 error_response=response.text[:200])
+                    return []
+                    
         except Exception as e:
-            logger.warning("Could not fetch model info from database", error=str(e))
-            return {}
+            logger.error("Exception retrieving messages from database",
+                        debate_id=debate_id,
+                        error=str(e),
+                        error_type=type(e).__name__)
+            return []
 
     async def _determine_next_speaker(self, models: List[str], recent_messages: List[Dict]) -> str:
         """Determina quale modello deve parlare successivamente usando round-robin"""
@@ -400,21 +428,6 @@ class DebateManager:
                           next_speaker=next_speaker)
             return next_speaker
 
-    def _convert_model_name(self, model_name: str) -> str:
-        """Converte il nome del modello nel formato appropriato per OpenRouter usando models_service"""
-        converted = models_service.get_model(model_name)
-        
-        if converted is None:
-            logger.warning("Model not found in models service", 
-                          model=model_name)
-            # Return the original model name as fallback
-            return model_name
-        
-        logger.debug("Model name converted", 
-                    original=model_name, 
-                    converted=converted)
-        
-        return converted
 
 
 # Istanza globale del debate manager

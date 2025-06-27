@@ -160,12 +160,24 @@ class OpenRouterClient:
             logger.debug("Model is in cooldown", model=model, cooldown_until=model_state.cooldown_until)
             return False
         
-        # Check error count for free models
+        # Check error count for free models with auto-recovery
         if model in self.free_models and model_state.error_count >= 3:
-            logger.debug("Free model has too many errors", model=model, error_count=model_state.error_count)
-            return False
+            # Auto-recovery: reset error count after 5 minutes
+            if model_state.last_request and (current_time - model_state.last_request) > timedelta(minutes=5):
+                logger.info("Auto-recovering free model after cooldown", model=model, error_count=model_state.error_count)
+                model_state.error_count = 0
+                model_state.status = ModelStatus.AVAILABLE
+            else:
+                logger.debug("Free model has too many errors", model=model, error_count=model_state.error_count)
+                return False
         
         return True
+    
+    def reset_model_state(self, model: str):
+        """Reset the state of a model (useful when model becomes available again)"""
+        if model in self.model_states:
+            logger.info("Resetting model state", model=model)
+            del self.model_states[model]
 
     async def _apply_rate_limit(self, model: str):
         """Apply rate limiting based on model type"""

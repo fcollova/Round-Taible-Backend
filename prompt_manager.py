@@ -141,6 +141,11 @@ class PromptManager:
         if '{context}' in system_template or '{context}' in user_template:
             template_params['context'] = dynamic_values.get('context', '')
         
+        # Aggiungi tutti gli altri dynamic_values che non sono stati gestiti esplicitamente
+        for key, value in dynamic_values.items():
+            if key not in ['topic', 'personality', 'context'] and key not in template_params:
+                template_params[key] = value
+        
         logger.debug("Template parameters built",
                     prompt_name=prompt_config.name,
                     template_params=list(template_params.keys()),

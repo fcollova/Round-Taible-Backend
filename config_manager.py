@@ -127,6 +127,14 @@ class ConfigManager:
         """Get log file path."""
         return self.config.get('logging', 'log_file', fallback='./logs/backend.log')
     
+    def get_module_logging_levels(self) -> Dict[str, str]:
+        """Get module-specific logging levels."""
+        module_levels = {}
+        if self.config.has_section('logging.modules'):
+            for module_name, level in self.config.items('logging.modules'):
+                module_levels[module_name] = level.upper()
+        return module_levels
+    
     # OpenRouter Configuration
     def get_openrouter_api_key(self) -> str:
         """Get OpenRouter API key."""
