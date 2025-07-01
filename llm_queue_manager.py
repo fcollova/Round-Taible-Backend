@@ -784,6 +784,7 @@ Guidelines:
                             'debate_id': debate_id,
                             'models': participants,
                             'topic': debate_data.get('title', ''),
+                            'starting_model': debate_data.get('startingModel'),
                             'recent_messages': []  # Il debate_service recupererà i messaggi dal DB
                         })
                         

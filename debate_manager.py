@@ -33,6 +33,7 @@ class DebateManager:
         models = request.get('models', [])
         topic = request.get('topic')
         recent_messages = request.get('recent_messages', [])
+        starting_model = request.get('starting_model')
         
         if not debate_id or not models or not topic:
             raise HTTPException(status_code=400, detail="Missing required fields")
@@ -60,10 +61,15 @@ class DebateManager:
         # Recupera i messaggi reali dal database tramite API
         actual_messages = await self._get_debate_messages(debate_id)
         
+        # Recupera informazioni del dibattito per il starting model (se non già fornito)
+        if not starting_model:
+            starting_model = await self._get_debate_starting_model(debate_id)
+        
         logger.info("Retrieved actual messages from database",
                    debate_id=debate_id,
                    actual_messages_count=len(actual_messages),
-                   frontend_messages_count=len(recent_messages))
+                   frontend_messages_count=len(recent_messages),
+                   starting_model=starting_model)
         
         # Usa context_manager per costruire il contesto con i messaggi reali
         debate_context = await context_manager.build_debate_context(
@@ -73,7 +79,7 @@ class DebateManager:
         )
         
         # Determina chi deve parlare (round-robin dalla lista dei modelli)
-        next_model_id = await self._determine_next_speaker(models, actual_messages)
+        next_model_id = await self._determine_next_speaker(models, actual_messages, starting_model)
         
         # Ottieni informazioni complete del modello
         next_model_info = await models_service.get_model(next_model_id)
@@ -368,16 +374,52 @@ class DebateManager:
                         error_type=type(e).__name__)
             return []
 
-    async def _determine_next_speaker(self, models: List[str], recent_messages: List[Dict]) -> str:
+    async def _get_debate_starting_model(self, debate_id: str) -> str:
+        """Recupera il modello di partenza scelto per il dibattito"""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.frontend_url}/api/debates/{debate_id}",
+                    timeout=self.frontend_timeout
+                )
+                
+                if response.status_code == 200:
+                    debate_data = response.json()
+                    starting_model = debate_data.get('startingModel')
+                    logger.debug("Retrieved starting model from database",
+                               debate_id=debate_id,
+                               starting_model=starting_model)
+                    return starting_model
+                else:
+                    logger.warning("Failed to retrieve debate data for starting model",
+                                 debate_id=debate_id,
+                                 status_code=response.status_code)
+                    return None
+                    
+        except Exception as e:
+            logger.error("Exception retrieving starting model from database",
+                        debate_id=debate_id,
+                        error=str(e),
+                        error_type=type(e).__name__)
+            return None
+
+    async def _determine_next_speaker(self, models: List[str], recent_messages: List[Dict], starting_model: str = None) -> str:
         """Determina quale modello deve parlare successivamente usando round-robin"""
         if not models:
             raise HTTPException(status_code=400, detail="No models provided")
         
         if not recent_messages:
-            # Se non ci sono messaggi, inizia con il primo modello
-            next_speaker = models[0]
-            logger.info("No previous messages, starting with first model", 
-                       next_speaker=next_speaker)
+            # Se non ci sono messaggi, inizia con il modello scelto o il primo
+            if starting_model and starting_model in models:
+                next_speaker = starting_model
+                logger.info("No previous messages, starting with chosen model", 
+                           next_speaker=next_speaker,
+                           starting_model=starting_model)
+            else:
+                next_speaker = models[0]
+                logger.info("No previous messages, starting with first model", 
+                           next_speaker=next_speaker,
+                           starting_model_missing=starting_model)
             return next_speaker
         
         # Trova l'ultimo messaggio AI (non moderatore)

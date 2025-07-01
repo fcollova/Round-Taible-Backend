@@ -2,6 +2,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from typing import Dict, List, Set
 import json
 import asyncio
+import httpx
 from datetime import datetime
 import logging
 from logging_config import get_context_logger, performance_metrics
@@ -453,11 +454,23 @@ class DebateWebSocketManager:
                 config.get_frontend_timeout()
             )
             
+            # Recupera informazioni complete del dibattito
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{config.get_frontend_url()}/api/debates/{debate_id}",
+                    timeout=config.get_frontend_timeout()
+                )
+                
+                debate_data = {}
+                if response.status_code == 200:
+                    debate_data = response.json()
+            
             # Continua il dibattito automaticamente
             result = await debate_service.continue_debate({
                 'debate_id': debate_id,
                 'models': participants,
                 'topic': topic,
+                'starting_model': debate_data.get('startingModel'),
                 'recent_messages': []  # Il debate_service recupererà i messaggi dal DB
             })
             
