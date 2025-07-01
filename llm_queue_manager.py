@@ -233,6 +233,9 @@ class LLMQueueManager:
                         'data': message_data
                     })
                     
+                    # Programma automaticamente il prossimo messaggio (gestione autonoma backend)
+                    await self._schedule_next_message(request)
+                    
                     # Callback se presente
                     if request.callback:
                         await request.callback(request_id, response, None)
@@ -719,6 +722,85 @@ Guidelines:
                     debate_id=debate_id,
                     error=str(e),
                     error_type=type(e).__name__)
+    
+    async def _schedule_next_message(self, current_request: MessageRequest):
+        """Programma automaticamente il prossimo messaggio nel dibattito"""
+        try:
+            # Verifica che il dibattito sia ancora attivo
+            debate_id = current_request.debate_id
+            
+            # Recupera lo stato del dibattito
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.frontend_url}/api/debates/{debate_id}",
+                    timeout=self.frontend_timeout
+                )
+                
+                if response.status_code != 200:
+                    logger.warning("Cannot get debate status for auto-continuation",
+                                 debate_id=debate_id,
+                                 status_code=response.status_code)
+                    return
+                
+                debate_data = response.json()
+                
+                # Solo continua se il dibattito è ancora live
+                if debate_data.get('status') != 'live':
+                    logger.info("Debate not live, stopping auto-continuation",
+                              debate_id=debate_id,
+                              status=debate_data.get('status'))
+                    return
+                
+                # Recupera lista partecipanti
+                participants = debate_data.get('participants', [])
+                if len(participants) < 2:
+                    logger.warning("Not enough participants for auto-continuation",
+                                 debate_id=debate_id,
+                                 participant_count=len(participants))
+                    return
+                
+                logger.info("Scheduling next message for debate auto-continuation",
+                           debate_id=debate_id,
+                           participants=participants,
+                           current_turn=current_request.message_count + 1)
+                
+                # Programma il prossimo messaggio con un delay
+                async def continue_debate():
+                    await asyncio.sleep(5)  # Attesa 5 secondi tra messaggi
+                    
+                    # Richiama il debate manager per continuare
+                    try:
+                        from debate_manager import get_debate_service
+                        from config_manager import get_config
+                        
+                        config = get_config()
+                        debate_service = get_debate_service(
+                            config.get_frontend_url(),
+                            config.get_frontend_timeout()
+                        )
+                        
+                        # Continua il dibattito automaticamente
+                        await debate_service.continue_debate({
+                            'debate_id': debate_id,
+                            'models': participants,
+                            'topic': debate_data.get('title', ''),
+                            'recent_messages': []  # Il debate_service recupererà i messaggi dal DB
+                        })
+                        
+                    except Exception as e:
+                        logger.error("Failed to auto-continue debate",
+                                   debate_id=debate_id,
+                                   error=str(e),
+                                   error_type=type(e).__name__)
+                
+                # Avvia task asincrono per continuazione
+                asyncio.create_task(continue_debate())
+                
+        except Exception as e:
+            logger.error("Failed to schedule next message",
+                        debate_id=current_request.debate_id,
+                        error=str(e),
+                        error_type=type(e).__name__)
     
     async def _cleanup_expired_requests(self):
         """Rimuove richieste scadute"""

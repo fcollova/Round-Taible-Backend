@@ -268,14 +268,22 @@ class DebateWebSocketManager:
             
             elif action_type == "debate_started":
                 timestamp = action.get("timestamp")
-                logger.info("Debate started event",
+                participants = action.get("participants", [])
+                topic = action.get("topic", "")
+                
+                logger.info("Debate started event - triggering auto-continuation",
                            debate_id=debate_id,
-                           started_at=timestamp)
+                           started_at=timestamp,
+                           participants=participants)
                 
                 await self.update_debate_state(debate_id, {
                     "status": "live",
                     "started_at": timestamp
                 })
+                
+                # Avvia automaticamente il dibattito chiamando il debate manager
+                if participants and len(participants) >= 2:
+                    await self._start_auto_debate(debate_id, participants, topic)
             
             elif action_type == "new_message":
                 # Messaggio del moderatore da propagare
@@ -423,6 +431,45 @@ class DebateWebSocketManager:
             "failed": total_failed,
             "total_attempts": total_sent + total_failed
         }
+    
+    async def _start_auto_debate(self, debate_id: str, participants: list, topic: str):
+        """Avvia automaticamente il dibattito dal backend"""
+        try:
+            logger.info("Starting auto-debate from WebSocket trigger",
+                       debate_id=debate_id,
+                       participants=participants,
+                       topic=topic)
+            
+            # Delay per dare tempo al frontend di aggiornare lo stato
+            await asyncio.sleep(2)
+            
+            # Import dinamico per evitare circular imports
+            from debate_manager import get_debate_service
+            from config_manager import get_config
+            
+            config = get_config()
+            debate_service = get_debate_service(
+                config.get_frontend_url(),
+                config.get_frontend_timeout()
+            )
+            
+            # Continua il dibattito automaticamente
+            result = await debate_service.continue_debate({
+                'debate_id': debate_id,
+                'models': participants,
+                'topic': topic,
+                'recent_messages': []  # Il debate_service recupererà i messaggi dal DB
+            })
+            
+            logger.info("Auto-debate started successfully",
+                       debate_id=debate_id,
+                       result=result)
+            
+        except Exception as e:
+            logger.error("Failed to start auto-debate",
+                        debate_id=debate_id,
+                        error=str(e),
+                        error_type=type(e).__name__)
 
     def remove_debate_state(self, debate_id: str):
         """Forcibly remove debate state from memory (admin action)"""
